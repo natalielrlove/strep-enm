@@ -1,0 +1,127 @@
+---
+title: "BioClim Layer Correlations"
+author: "Natalie Love"
+date: "1/7/2020"
+output: html_document
+---
+To view the link to the Botany ENM Crash Course Rmarkdown script, open the "CrashCourse_2019.html" file in the R script box folder
+
+This will work best if you use Rstudio
+
+##Load/install Packages
+Install these packages before loading
+```{r}
+library(maptools)
+library(raster)
+library(rgdal)
+library(sp)
+library(maps)
+library(mapproj)
+library(devtools)
+library(leaflet)
+library(sf)
+```
+
+##Read in the 19 bioclim layers
+THis will use the package "raster" to read these in as raster files
+```{r}
+#replace the "location" with the location on your own computer of each bioclim variable (set working directory if you need to, the extension will be tif rather than bil)
+
+alt_l <- raster("alt.bil") #need to find alt layer, dont worry about this one for now. Maybe you could look on the worldclim website and see if they have one you can download one that is 30 arc seconds.
+
+bio1_l <- raster("wc2-2/wc2.0_bio_30s_01.tif") #this is what the path looked like on my computer, again you'll need to update it with the path for yours.
+
+bio2_l <- raster("data/climate_processing/Bioclim/bio2.bil")
+bio3_l <- raster("data/climate_processing/Bioclim/bio3.bil")
+bio4_l <- raster("data/climate_processing/Bioclim/bio4.bil")
+bio5_l <- raster("data/climate_processing/Bioclim/bio5.bil")
+bio6_l <- raster("data/climate_processing/Bioclim/bio6.bil")
+bio7_l <- raster("data/climate_processing/Bioclim/bio7.bil")
+bio8_l <- raster("data/climate_processing/Bioclim/bio8.bil")
+bio9_l <- raster("data/climate_processing/Bioclim/bio9.bil")
+bio10_l <- raster("data/climate_processing/Bioclim/bio10.bil")
+bio11_l <- raster("data/climate_processing/Bioclim/bio11.bil")
+bio12_l <- raster("data/climate_processing/Bioclim/bio12.bil")
+bio13_l <- raster("data/climate_processing/Bioclim/bio13.bil")
+bio14_l <- raster("data/climate_processing/Bioclim/bio14.bil")
+bio15_l <- raster("data/climate_processing/Bioclim/bio15.bil")
+bio16_l <- raster("data/climate_processing/Bioclim/bio16.bil")
+bio17_l <- raster("data/climate_processing/Bioclim/bio17.bil")
+bio18_l <- raster("data/climate_processing/Bioclim/bio18.bil")
+bio19_l <- raster("data/climate_processing/Bioclim/bio19.bil")
+```
+
+#Take a look at the raster layer
+This should show a global extent
+```{r}
+plot(bio1_l)
+bio1_l
+```
+
+
+#Get California shapefile to use for clipping and take a look at it
+```{r}
+
+#the function getData is part of the raster package, it has basic geographic boundaries, level 1 designates the first level of subdivision (i.e., states)
+usa <- getData('GADM', country='USA', level=1)
+
+#subset the USA so we have JUST california
+california <- subset(usa, NAME_1=="California")
+plot(california)
+```
+
+##Mask and Crop each layer to produce bioclim layers only in the extent of California (rather than the whole world)
+```{r}
+bio1 <- crop(bio1_l, extent(california))
+plot(bio1)
+
+bio1 <- mask(bio1, california)
+plot(bio1)
+```
+
+##Repeat the masking and cropping process with all 19 bioclim layers
+you do not need to plot every layer, so you can skip the plot() functions
+Please add the code here.
+You can insert new R code chunks for each layer or write the code for all layers here
+```{r}
+
+```
+
+
+##Use interactive map to visualize raster
+Replace bio1 with any cropped raster layer to view on interactive map. Check to make sure that we are only plotting the area of CA for each layer. 
+```{r}
+pal <- colorNumeric(c("#556270", "#4ECDC4", "#C7F464", "#FF6B6B", "#C44D58"),
+                    values(bio1),
+                    na.color = "transparent")
+
+leaflet() %>%
+  addProviderTiles(providers$OpenStreetMap.BlackAndWhite) %>%
+  addRasterImage(bio1, colors = pal, opacity = 0.8) %>%
+  addLegend(pal = pal, values = values(bio1),
+    title = "Bio1")
+```
+
+##Next write the raster (export it from R) so we can use it to run ENM
+This will save the layer in an ascii format (which the ENM GUI will accept) in a folder to your working directory called ExportedClimateData
+Add code here to export all 19 layers
+```{r}
+writeRaster(bio1, "ExportedClimateData/bio1.asc", format="ascii", overwrite = TRUE)
+```
+
+##Calculate correlation coefficient
+```{r}
+### Stack all layers
+stack <- stack(bio1, bio2, bio3, bio4, bio5, bio6, bio7, bio8, bio9, bio10, bio11, bio12, bio13, bio14, bio15, bio16, bio17, bio18, bio19)
+
+### Then calculate the correlation coefficient
+corr <- layerStats(stack, 'pearson', na.rm=TRUE)
+
+### Isolate only the pearson correlation coefficient 
+c <- corr$`pearson correlation coefficient`
+
+##Write CSV determine which layers do not have a correlation coefficient greater than |0.8|
+write.csv(c, "data/climate_processing/correlationBioclim.csv")
+```
+
+By the end, you should report back a list of climate variables that are correlated less than 0.8.
