@@ -1,0 +1,63 @@
+---
+title: "Data Cleaning"
+author: "Natalie Love"
+date: "1/7/2020"
+output: html_document
+---
+
+##Load Packages
+```{r}
+library(tidyverse)
+library(rgdal)
+library(raster)
+library(sp)
+library(sf)
+```
+
+##Load Data
+```{r}
+Allspec_nodups_withanom_4kmerr <- read_csv("Allspec_nodups_withanom_4kmerr.csv")
+usbou
+```
+
+##Parse large data table in to smaller data table
+```{r}
+tort_occ_enm_1 <- Allspec_nodups_withanom_4kmerr %>%
+  select(year, latitude, longitude) %>% mutate(species = "Streptanthus_tortuosus")
+
+#re-order columns
+tort_occ_enm <- tort_occ_enm_1[, c(4,2,3,1)]
+```
+
+##Round to two decimal places which has an accuracy of 1.11km
+```{r}
+tort_occ_enm$latitude <- round(tort_occ_enm$latitude, 2)
+tort_occ_enm$longitude <- round(tort_occ_enm$longitude, 2)
+```
+
+##Remove duplicates
+```{r}
+#This removed 14 duplicate spatial observations
+tort_occ_enm_unique <- tort_occ_enm %>% distinct()
+
+
+```
+
+#Visualize!
+```{r}
+#Create simple features object
+tort_points <- st_as_sf(tort_occ_enm_unique_tbl, coords = c("longitude","latitude"), crs = 4326)
+tort_points
+
+ggplot() + 
+  geom_sf(data = california) +
+  geom_sf(data = tort_points)
+
+
+```
+
+##Export
+```{r}
+write_csv(tort_occ_enm_unique, "tortuosus_occurance.csv")
+```
+
