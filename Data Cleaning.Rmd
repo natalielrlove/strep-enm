@@ -17,7 +17,8 @@ library(sf)
 ##Load Data
 ```{r}
 Allspec_nodups_withanom_4kmerr <- read_csv("Allspec_nodups_withanom_4kmerr.csv")
-usbou
+
+tort_occ <- read_csv("tortuosus_occurance.csv")
 ```
 
 ##Parse large data table in to smaller data table
