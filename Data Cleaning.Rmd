@@ -18,6 +18,10 @@ library(sf)
 ```{r}
 Allspec_nodups_withanom_4kmerr <- read_csv("Allspec_nodups_withanom_4kmerr.csv")
 
+<<<<<<< HEAD
+=======
+tort_occ <- read_csv("tortuosus_occurance.csv")
+>>>>>>> 918ff29f30cb668a1bcca8cbd914aba2d4776f97
 ```
 
 ##Parse large data table in to smaller data table
