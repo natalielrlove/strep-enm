@@ -7,43 +7,51 @@ output: html_document
 
 Load packages
 ```{r}
-library(devtools)  
-install_github("andrefaa/ENMTML", force = TRUE)  
-library(ENMTML)  
+library(raster)
+if (!"devtools"%in%installed.packages()){install.packages("devtools")}  
+devtools::install_github("andrefaa/ENMTML") 
+library(ENMTML)
 
 ```
 
 ##Named directories
 ```{r}
-pred_dir <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/predictors_folder"
-proj_dir <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/projection_folder"
-occurence_file <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/occurences_folder/tort_occ_cfp.txt"
-test_file <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/occurences_folder/tort_test_cfp.txt"
+d_env <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2_3 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/predictors_folder"
+
+d_proj<- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2_3 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/projection_folder"
+
+d_occ <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2_3 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/tort_occ_cfp.txt"
+
+d_output <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2_3 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/all_results"
 ```
 
-
-ENMTML
 ```{r}
-ENMTML(pred_dir = pred_dir,
-       proj_dir = proj_dir,
-       occ_file = occurence_file,
-       colin_var = NULL, #we already dealt with this
-       sp = "species",
-       x = "longitude",
-       y = "latitude",
-       min_occ = 10,
-       thin_occ = c(method='MORAN'), #designed to deal with spatial auto-corr
-       eval_occ = NULL,
-       part = c(method= 'BOOT', replicates ='5', proportion = '0.7'), #training is 70% of data
-       imp_var = TRUE,
-       sp_accessible_area = NULL, #all of the CFP, we could change this to buffer
-       pseudoabs_method = c(method='GEO_ENV_CONST', width='30'), #30km buffer
-       pres_abs_ratio = 1, 
-       save_final = TRUE,
-       algorithm = c("MXD"), #maxent modeling
-       thr=c(type='MAX_TSS'),
-       msdm=NULL,
-       extrapolation = TRUE
-       )
-
+ENMTML(
+ pred_dir = d_env,
+ proj_dir = d_proj,
+ result_dir = file.path(d_output,"Result_test"),
+ occ_file = d_occ,
+ sp = 'sp',
+ x = 'x',
+ y = 'y',
+ min_occ = 10,
+ thin_occ = c(method='MORAN'),
+ eval_occ = NULL,
+ colin_var = NULL,
+ imp_var = TRUE,
+ sp_accessible_area = NULL,
+ pseudoabs_method = c(method='GEO_ENV_CONST', width='30'),
+ pres_abs_ratio = 1,
+ part=c(method= 'KFOLD', folds='5'),
+ save_part = TRUE,
+ save_final = TRUE,
+ algorithm = c('MXD'),
+ thr = c(type='MAX_TSS'),
+ msdm = NULL,
+ ensemble = NULL,
+ extrapolation = TRUE,
+ cores = 1
+)
 ```
+
+
