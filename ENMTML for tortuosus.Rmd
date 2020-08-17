@@ -1,0 +1,49 @@
+---
+title: "ENMTML for S. tortuosus"
+author: "Natalie Love"
+date: "2/18/2020"
+output: html_document
+---
+
+Load packages
+```{r}
+library(devtools)  
+install_github("andrefaa/ENMTML", force = TRUE)  
+library(ENMTML)  
+
+```
+
+##Named directories
+```{r}
+pred_dir <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/predictors_folder"
+proj_dir <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/projection_folder"
+occurence_file <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/occurences_folder/tort_occ_cfp.txt"
+test_file <- "~/Dropbox/1-Cloud/PhD/Writing/Dissertation/Ch. 2 - Reproductive Phenology/Data and Analysis/ENM/ENM Git/Strep ENM Github/occurences_folder/tort_test_cfp.txt"
+```
+
+
+ENMTML
+```{r}
+ENMTML(pred_dir = pred_dir,
+       proj_dir = proj_dir,
+       occ_file = occurence_file,
+       colin_var = NULL, #we already dealt with this
+       sp = "species",
+       x = "longitude",
+       y = "latitude",
+       min_occ = 10,
+       thin_occ = c(method='MORAN'), #designed to deal with spatial auto-corr
+       eval_occ = NULL,
+       part = c(method= 'BOOT', replicates ='5', proportion = '0.7'), #training is 70% of data
+       imp_var = TRUE,
+       sp_accessible_area = NULL, #all of the CFP, we could change this to buffer
+       pseudoabs_method = c(method='GEO_ENV_CONST', width='30'), #30km buffer
+       pres_abs_ratio = 1, 
+       save_final = TRUE,
+       algorithm = c("MXD"), #maxent modeling
+       thr=c(type='MAX_TSS'),
+       msdm=NULL,
+       extrapolation = TRUE
+       )
+
+```
