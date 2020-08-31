@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ##Load packages
-```{r}
+```{r, message=FALSE}
 library(spThin)
 library(dismo)
 library(maptools)
@@ -21,10 +21,11 @@ library(sf)
 library(gstat) #variogram
 library(RStoolbox) #raster PCA
 ```
-##Read in occurence data and remove spatial duplicates
+
+#1. Read in occurence data and remove spatial duplicates
 These are from my herbarium dataset and lack duplicates (in time and space but not just space), those that do not have a exact DOY, those that have an error radius less than 4km, those that are in flower. These represent specimens that fall within the boundaries of the California Floristic Province (CFP). Of the 784 in the complete dataset, only six occurrences did not fall within the boundaries of the CFP. Those have already been removed.
 ```{r}
-tort_occ <- read.csv(file = "data/tort_occ_cfp.csv")
+tort_occ <- read.csv(file = "data/occurrences/tort_occ_cfp.csv")
 head(tort_occ)
 
 #remove columns that are not spatial coordinates
@@ -35,10 +36,258 @@ head(tort_occ)
 tort_occ_unique <- unique.data.frame(tort_occ)
 ```
 
-##Read in climate data (rasters)
+#2. Read in climate data (rasters)
+Each climate variable is represented as a grid called a raster.
+```{r}
+#read in Rasters from current climate folder
+list <- list.files(path = "data/current_climate/", full.names = TRUE, recursive = FALSE)
+
+#sort list by the numeric values (ignore characters), these will be sorted 1-15, then solar radiation
+list <- mixedsort(sort(list))
+list
+
+#create raster stack
+predictors.cfp <- stack(list)
+
+#names should have the names of all the predictors
+predictors.cfp
+
+#plot
+plot(predictors.cfp[[1]]) #MAT
+#plot occurrence points with raster
+points(x = tort_occ$X, 
+       y = tort_occ$Y, 
+       col = "red", 
+       pch = 20, 
+       cex = 0.75)
+```
 
 
-#1. Thin occurrences
+#3. Thin occurrences
 Need to thin occurences to reduce sampling bias. I used the package spThin, which requires a user inputted nearest neighbor distance. The package will randomly chose a point to thin in a pair of points within the nearest neighbor distance. Ideally, thinning occurences will reduce autocorrelation among occurrences in environmental space, but retain enough occurrences to build a robust model. To determine the optimum nearest neighbor distance, I constructed variograms using PC values for the environmental climate layers.
 
-###
+###3a. Create Raster PCA
+Reduce dimensionality among environmental layers
+```{r}
+#Create raster PCA
+cfp.pca <- rasterPCA(predictors.cfp, #raster stack
+                     spca = TRUE, #preform standardized PCA, scaled and centered
+                     maskCheck = TRUE) #masks NAs
+#Save raster brick which is the map object
+climate_pcs <- cfp.pca$map
+plot(climate_pcs[[1]]) #plot PC1
+
+#PCA Summary statistics
+summary(cfp.pca$model)
+loadings(cfp.pca$model)
+```
+
+###3b. Extract PC values for each occurrence
+I need a dataframe that has the XY coordinates of each occurrence plus its PC value across all of the PC rasters. I used the extract function from the `raster` package. Need to indicate which columns are `[,longitude, latitude]` or X and Y.
+```{r}
+#Extract PC values
+tort_climate_pca <- raster::extract(climate_pcs, tort_occ_unique[,c(1,2)])
+head(tort_climate_pca)
+
+#Need to bind back to columns with coordinates
+tort_climate_pca_alldata <- cbind(tort_occ_unique, tort_climate_pca)
+head(tort_climate_pca_alldata)
+```
+
+###3c. Create variogram to determine the distance at which points are no longer correlated
+Uses functions in the `gstat` and `sp` packages
+```{r}
+#make data.frame into spatialpointsdataframe with package sp. Make a copy of dataframe with all the necessary info
+tort_occ_climate.sp <-tort_climate_pca_alldata
+
+#create sp object by defining which columns are the coodinates
+coordinates(tort_occ_climate.sp) = ~X+Y
+head(tort_occ_climate.sp) #coordinates are no longer a column but are defined as part of the object
+
+#create variogram based on PCs
+#I used PC1 and PC1 because, together, they account for 71% of the variance in climate
+vario_tort_PC1 <- variogram(PC1~1, data = tort_occ_climate.sp, cutoff = 5)
+vario_tort_PC2 <- variogram(PC2~1, data = tort_occ_climate.sp, cutoff = 5)
+
+#plot
+par(mfrow=c(1,2))
+plot(vario_tort_PC1)
+plot(vario_tort_PC2)
+```
+
+###3d. Fit a model to the points to determine the range
+The range is the distance between points where they are no longer highly correlated. There are different models (different line functions). Here I chose the sphere option.
+
+Need to give starting values for the sill, range, and nugget.
+
+* Sill: Value where semivariance is no longer increasing
+* Range: Distance between points where semivariance is no longer increasing
+* Nugget: Where the curve crosses the y-axis
+  
+![](https://vsp.pnnl.gov/help/image/Variogram.gif)
+```{r}
+#fit models
+vario_tort_PC1.fit <- fit.variogram(vario_tort_PC1, 
+                                model = vgm(psill = 3, model = "Sph", range = 1, nugget = 0.5))
+
+vario_tort_PC2.fit <- fit.variogram(vario_tort_PC2, model = vgm(psill = 0.6, model = "Sph", range = 3, nugget = 0.1))
+
+#plot
+par(mfrow = c(1,2))
+plot(vario_tort_PC1,vario_tort_PC1.fit, main = "Variogram for PC1")
+plot(vario_tort_PC2,vario_tort_PC2.fit, main = "Variogram for PC2")
+
+#check output for range value
+vario_tort_PC1.fit
+vario_tort_PC2.fit
+```
+
+###3e. Use `spThin` to thin occurrences
+Check out `?thin` for more information
+```{r}
+#need to have species name column for thin function to work
+sp <- rep("Streptanthus_tortuosus", nrow(tort_occ_unique))
+tort_occ_spThin <- cbind(sp,tort_occ_unique)
+head(tort_occ_spThin)
+
+tort_thin <- thin(loc.data = tort_occ_spThin,
+     lat.col = "Y", #latitude column
+     long.col = "X", #longitude column
+     spec.col = "sp", #species name
+     thin.par = 1.77, #nearest neighbor distance determined from variograms
+     reps = 100, #how many times to do the random thinning process
+     locs.thinned.list.return = TRUE, 
+     write.files = TRUE, #write thinned files to CSV
+     max.files = 10, #how many versions do you want
+     out.dir = "data/occurrences/thinned/", #where do you want to put them
+     out.base = "tort_thinned", #what shall we name them
+     write.log.file = TRUE, #print a log of what was done for future reference
+     log.file = "data/occurrences/thinned/tortuosus_thinned_full_log_file.txt") #whats that log going to be called and where shall I put it
+
+#look at if we have enough reps to consistently get the maximum number of records retained
+#max is 549 occurrences
+plotThin(tort_thin)
+```
+
+###3f. Read in thinned occurrence file
+```{r}
+tort_occ_thinned <- read_csv("data/occurrences/tort_thinned.csv")
+
+#plot thinned and unthinned occurrences together
+plot(predictors.cfp[[1]]) #MAT
+#plot occurrence points with raster
+points(x=tort_occ$X,
+       y=tort_occ$Y,
+       col="gray",
+       pch = 20,
+       cex = 0.75)
+points(x = tort_occ_thinned$X, 
+       y = tort_occ_thinned$Y, 
+       col = "red", 
+       pch = 1, 
+       cex = 0.75)
+```
+
+#4. Set up: creating training and testing sets
+###4a. Generate background points
+The function `background.points.buffer` allows me to generate background points to characterize the environment where the species occurs.
+```{r}
+#just need the lat and long
+tort_occ <- tort_occ_thinned[,2:3]
+head(tort_occ)
+
+#generate random background points
+backg <- randomPoints(predictors.cfp, #raster stack
+                      n = 10000) 
+
+#generate background points using background buffer
+backg <- background.points.buffer(points = tort_occ, 
+                                  radius = 40000,
+                                  n = 2000,
+                                  mask = predictors.cfp[[1]])
+
+#Map presence and background points
+plot(predictors.cfp[[1]])
+points(backg, pch = "-", col = "red")
+points(tort_occ, pch = "+", col = "blue")
+```
+
+
+###4b. Set up training/testing datasets
+The thinned presence points will be divided into 5 groups. The presence testing data will be 80% of the data. The other 20% will be used for testing
+```{r}
+#need just the lat/long column of thinned presence data
+tort_occ <- tort_occ_thinned[,2:3]
+
+#set up training and testing dataset for presence data
+group <- kfold(tort_occ, 5)
+pres_train <- tort_occ[group != 1,]
+pres_test <- tort_occ[group == 1,]
+
+#set up training and testing for background data
+group <- kfold(backg, 5)
+backg_train <- backg[group != 1,]
+backg_test <- backg[group == 1,]
+
+#plot test vs. training datasets
+plot(predictors.cfp[[1]])
+points(backg_train, pch = "-", col = "red", cex = 0.5)
+points(backg_test, pch = "-", col = "black", cex = 0.5)
+points(pres_train, pch = "+", col = "blue", cex = 0.5)
+points(pres_test, pch = "+", col = "green", cex = 0.5)
+```
+
+#5. Construct MaxEnt Model
+This code needs to communicate with the MaxEnt Java file. the maxent.jar needs to go in a specific folder within the package Dismo
+```{r}
+#find out where to put .jar
+system.file("java", package="dismo")
+
+#define location of jar file
+jar <- "/Library/Frameworks/R.framework/Versions/4.0/Resources/library/dismo/java/maxent.jar"
+
+#run Maxent, this loops helps us figure out if the code will work
+if (file.exists(jar)){
+  xm <- maxent(x = predictors.cfp, 
+               p = as.matrix(pres_train),
+               a = as.matrix(backg_train))
+  plot(xm)
+} else {
+  cat("cannot run this example because maxent is not available")
+  plot(1)
+}
+
+plot(xm)
+show(xm)
+response(xm)
+```
+
+#6. Evaluate Model
+```{r}
+e <- evaluate(p = pres_test,
+              a = backg_test, 
+              model = xm,
+              x = predictors.cfp)
+
+e
+```
+
+#7. Use Maxent Model to create current suitability map (make predictions across climate layers)
+This will take the model (xm) and use it to predict the probability that the species will occur at any given grid cell in the CFP. Predict outputs a raster layer with values that range from 0-1.
+```{r}
+px <- dismo::predict(predictors.cfp, xm)
+plot(px)
+px
+```
+
+#8. Create binary presence/absence maps
+Presence/absense at a given grid cell depends on a given suitability threshold. 
+```{r}
+tr <- threshold(e, "spec_sens")
+tr
+
+#plot
+plot(px > tr, main = "presence/absence")
+points(pres_train, pch="+", cex = 0.5)
+```
+
