@@ -189,22 +189,17 @@ points(x = tort_occ_thinned$X,
 ```
 
 #4. Set up: creating training and testing sets
-###4a. Generate background points
-The function `background.points.buffer` allows me to generate background points to characterize the environment where the species occurs.
+###4a. Get occurrence data ready and generate background points
+Generate background points to characterize the environment (CFP)
 ```{r}
 #just need the lat and long
 tort_occ <- tort_occ_thinned[,2:3]
 head(tort_occ)
 
 #generate random background points
+set.seed(42)
 backg <- randomPoints(predictors.cfp, #raster stack
                       n = 10000) 
-
-#generate background points using background buffer
-backg <- background.points.buffer(points = tort_occ, 
-                                  radius = 40000,
-                                  n = 2000,
-                                  mask = predictors.cfp[[1]])
 
 #Map presence and background points
 plot(predictors.cfp[[1]])
@@ -246,30 +241,61 @@ system.file("java", package="dismo")
 #define location of jar file
 jar <- "/Library/Frameworks/R.framework/Versions/4.0/Resources/library/dismo/java/maxent.jar"
 
-#run Maxent, this loops helps us figure out if the code will work
-if (file.exists(jar)){
-  xm <- maxent(x = predictors.cfp, 
-               p = as.matrix(pres_train),
-               a = as.matrix(backg_train))
-  plot(xm)
-} else {
-  cat("cannot run this example because maxent is not available")
-  plot(1)
-}
-
+#run Maxent model
+xm <- maxent(x = predictors.cfp, 
+               p = as.matrix(tort_occ), #occurrences
+               a = as.matrix(backg), #background points
+               args = c("randomtestpoints=25"), #use 25% of data for test
+               path = "data/output/083020_noreps")
 plot(xm)
-show(xm)
 response(xm)
 ```
 
-#6. Evaluate Model
+#6. Evaluate Model using k-fold validation
 ```{r}
-e <- evaluate(p = pres_test,
-              a = backg_test, 
-              model = xm,
-              x = predictors.cfp)
+#create groups, we are going do to 5 "folds"
+k <- 5
+
+#designate folds for presence data
+group_p <- kfold(tort_occ, k) #creates a vector that assigns each row in the matrix to a group between 1 and k
+group_p[1:10] #take a look at the vector
+unique(group_p) #should return 1 2 3 4 5
+
+#designate folds for background data
+group_b <- kfold(backg, k)
+group_b[1:10]
+
+
+#for loop to do all five folds iteratively 
+e <- list() #create empty list to fill with for-loop
+for (i in 1:5) {
+  train_p <- tort_occ[group_p !=i,] #training dataset with 4 groups that are not in group i (1-5)
+  test_p <- tort_occ[group_p == i,]#test dataset is all presences in group i
+  train_b <- backg[group_b !=i,] #training dataset for background not in group i
+  test_b <- backg[group_b == i,]
+  #construct maxent model using training data
+  mx_e <- maxent(x = predictors.cfp,
+                 p = as.matrix(train_p), 
+                 a = as.matrix(train_b),
+                 path = paste("data/output/083020_noreps/",i, sep = "")) 
+  #evaluate using testing data
+  e[[i]] <- evaluate(p = as.matrix(test_p), 
+                     a = as.matrix(test_b),
+                     model = mx_e,
+                     x = predictors.cfp) #evaluate with test and training, always using all backgroud points and add to list
+}
 
 e
+
+#extract AUC and max TSS
+auc <- sapply(e, function(x){slot(x, "auc")})
+auc
+mean(auc)
+
+#get max tss
+maxTSS <- sapply(e, function(x){ x@t[which.max(x@TPR + x@TNR)] } )
+maxTSS
+mean(maxTSS)
 ```
 
 #7. Use Maxent Model to create current suitability map (make predictions across climate layers)
@@ -281,7 +307,7 @@ px
 ```
 
 #8. Create binary presence/absence maps
-Presence/absense at a given grid cell depends on a given suitability threshold. 
+Presence/absense at a given grid cell depends on a given suitability threshold. The "spec_sens" option is the suitability threshold that gives the maximum true positive rate (TPR) and True negative rate (TNR) 
 ```{r}
 tr <- threshold(e, "spec_sens")
 tr
