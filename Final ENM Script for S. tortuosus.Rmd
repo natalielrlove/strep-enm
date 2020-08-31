@@ -20,6 +20,7 @@ library(tidyverse)
 library(sf)
 library(gstat) #variogram
 library(RStoolbox) #raster PCA
+library(viridis)
 ```
 
 #1. Read in occurence data and remove spatial duplicates
@@ -188,8 +189,7 @@ points(x = tort_occ_thinned$X,
        cex = 0.75)
 ```
 
-#4. Set up: creating training and testing sets
-###4a. Get occurrence data ready and generate background points
+#4. Get occurrence data ready and generate background points
 Generate background points to characterize the environment (CFP)
 ```{r}
 #just need the lat and long
@@ -207,30 +207,6 @@ points(backg, pch = "-", col = "red")
 points(tort_occ, pch = "+", col = "blue")
 ```
 
-
-###4b. Set up training/testing datasets
-The thinned presence points will be divided into 5 groups. The presence testing data will be 80% of the data. The other 20% will be used for testing
-```{r}
-#need just the lat/long column of thinned presence data
-tort_occ <- tort_occ_thinned[,2:3]
-
-#set up training and testing dataset for presence data
-group <- kfold(tort_occ, 5)
-pres_train <- tort_occ[group != 1,]
-pres_test <- tort_occ[group == 1,]
-
-#set up training and testing for background data
-group <- kfold(backg, 5)
-backg_train <- backg[group != 1,]
-backg_test <- backg[group == 1,]
-
-#plot test vs. training datasets
-plot(predictors.cfp[[1]])
-points(backg_train, pch = "-", col = "red", cex = 0.5)
-points(backg_test, pch = "-", col = "black", cex = 0.5)
-points(pres_train, pch = "+", col = "blue", cex = 0.5)
-points(pres_test, pch = "+", col = "green", cex = 0.5)
-```
 
 #5. Construct MaxEnt Model
 This code needs to communicate with the MaxEnt Java file. the maxent.jar needs to go in a specific folder within the package Dismo
@@ -252,6 +228,7 @@ response(xm)
 ```
 
 #6. Evaluate Model using k-fold validation
+The thinned presence points will be divided into 5 groups. The presence testing data will be 80% of the data. The other 20% will be used for testing. This will be done iteratively through five folds.
 ```{r}
 #create groups, we are going do to 5 "folds"
 k <- 5
@@ -291,11 +268,28 @@ e
 auc <- sapply(e, function(x){slot(x, "auc")})
 auc
 mean(auc)
+sd(auc)
 
 #get max tss
 maxTSS <- sapply(e, function(x){ x@t[which.max(x@TPR + x@TNR)] } )
 maxTSS
 mean(maxTSS)
+sd(maxTSS)
+```
+
+#6b. Plot test/train
+This will plot test and train points for the last iteration.
+train_b = `nrow(train_p)` points
+test_b = `nrow(test_b)` points
+train_p = `nrow(train_p)` points
+test_p = `nrow(test_p)` points
+```{r}
+#plot test vs. training datasets
+plot(predictors.cfp[[1]])
+points(train_b, pch = "-", col = "red", cex = 0.5)
+points(test_b, pch = "-", col = "black", cex = 0.5)
+points(train_p, pch = "+", col = "blue", cex = 0.5)
+points(test_p, pch = "+", col = "green", cex = 0.5)
 ```
 
 #7. Use Maxent Model to create current suitability map (make predictions across climate layers)
@@ -303,17 +297,73 @@ This will take the model (xm) and use it to predict the probability that the spe
 ```{r}
 px <- dismo::predict(predictors.cfp, xm)
 plot(px)
-px
+
+```
+###7a. Create map in ggplot
+To plot rasters in ggplot, I need to make the raster object into a dataframe
+```{r}
+#turn raster into dataframe
+px_df <- as.data.frame(px, xy = TRUE)
+head(px_df) #layer has the suitability scores
+
+#create sf object with occurences for easy plotting with ggplot
+tort_occ_sf <- st_as_sf(tort_occ, coords = c("X","Y"), crs = 4326)
+class(tort_occ_sf)
+#plot with ggplot
+px_gg <- ggplot() +
+  geom_raster(data = px_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  geom_sf(data = tort_occ_sf, size = 1, color = "white") + #plot occurrence points
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+px_gg
+  
 ```
 
-#8. Create binary presence/absence maps
+#8. Create binary presence/absence rasters for current climate
 Presence/absense at a given grid cell depends on a given suitability threshold. The "spec_sens" option is the suitability threshold that gives the maximum true positive rate (TPR) and True negative rate (TNR) 
 ```{r}
-tr <- threshold(e, "spec_sens")
+tr <- mean(maxTSS)
 tr
 
 #plot
 plot(px > tr, main = "presence/absence")
-points(pres_train, pch="+", cex = 0.5)
+#add training points
+points(train_p, pch="+", cex = 0.5)
+
+#make a copy of px
+binary_px <- px
+
+#replace values in raster that are less than the threshold with 0
+binary_px[binary_px < tr] <- 0
+
+#replace value sin the raster that are greater than or equal to the threshold with 1
+binary_px[binary_px >= tr] <-1
+
+#plot
+plot(binary_px)
+
+```
+
+###8a. Plot binary maps with ggplot
+```{r}
+#make raster a df
+binary_px_df <- as.data.frame(binary_px, xy = TRUE)
+head(binary_px_df)
+
+#plot with ggplot
+binary_px_df_gg <- ggplot() +
+  geom_raster(data = binary_px_df, aes(x = x, y = y, fill = as.factor(layer))) +
+  scale_fill_viridis(na.value = "transparent", discrete = TRUE, name = "Presence/Absence", labels = c("Absence","Presence","")) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_px_df_gg
 ```
 
