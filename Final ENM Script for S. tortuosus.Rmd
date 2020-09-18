@@ -21,6 +21,7 @@ library(sf)
 library(gstat) #variogram
 library(RStoolbox) #raster PCA
 library(viridis)
+library(ENMeval)
 ```
 
 #1. Read in occurence data and remove spatial duplicates
@@ -220,9 +221,9 @@ jar <- "/Library/Frameworks/R.framework/Versions/4.0/Resources/library/dismo/jav
 #run Maxent model
 xm <- maxent(x = predictors.cfp, 
                p = as.matrix(tort_occ), #occurrences
-               a = as.matrix(backg), #background points
-               args = c("randomtestpoints=25"), #use 25% of data for test
-               path = "data/output/083020_noreps")
+               a = as.matrix(backg), #background points 
+               path = "data/output/083120"
+               )
 plot(xm)
 response(xm)
 ```
@@ -254,7 +255,7 @@ for (i in 1:5) {
   mx_e <- maxent(x = predictors.cfp,
                  p = as.matrix(train_p), 
                  a = as.matrix(train_b),
-                 path = paste("data/output/083020_noreps/",i, sep = "")) 
+                 path = paste("data/output/083120_noreps/",i, sep = "")) 
   #evaluate using testing data
   e[[i]] <- evaluate(p = as.matrix(test_p), 
                      a = as.matrix(test_b),
@@ -298,6 +299,8 @@ This will take the model (xm) and use it to predict the probability that the spe
 px <- dismo::predict(predictors.cfp, xm)
 plot(px)
 
+writeRaster(px, "data/output/suitability_rasters/current_suitability.tif", format = "GTiff")
+
 ```
 ###7a. Create map in ggplot
 To plot rasters in ggplot, I need to make the raster object into a dataframe
@@ -309,7 +312,8 @@ head(px_df) #layer has the suitability scores
 #create sf object with occurences for easy plotting with ggplot
 tort_occ_sf <- st_as_sf(tort_occ, coords = c("X","Y"), crs = 4326)
 class(tort_occ_sf)
-#plot with ggplot
+
+#plot with ggplot with occurrence points
 px_gg <- ggplot() +
   geom_raster(data = px_df, aes(x = x, y = y, fill = layer)) +
   scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
@@ -321,7 +325,18 @@ px_gg <- ggplot() +
   theme_bw(base_size = 14)
 
 px_gg
-  
+
+#no occurrence points
+px_gg <- ggplot() +
+  geom_raster(data = px_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+px_gg 
 ```
 
 #8. Create binary presence/absence rasters for current climate
@@ -347,6 +362,8 @@ binary_px[binary_px >= tr] <-1
 #plot
 plot(binary_px)
 
+writeRaster(binary_px, "data/output/binary_rasters/binary_current.tif", format = "GTiff")
+
 ```
 
 ###8a. Plot binary maps with ggplot
@@ -366,4 +383,751 @@ binary_px_df_gg <- ggplot() +
 
 binary_px_df_gg
 ```
+
+#9. Using model to make temporal projections (on novel climates)
+I am going to project this model onto a total of 5 future climate models in two time periods and two emission pathways
+
+**Near Future: 2021-2040**
+SSP 245
+SSP 585
+
+**Distant Future: 2080-2100**
+SSP 245
+SSP 585
+
+**Future Models (5 total)**
+BCC-CSM2 (BCC)
+CNRM-CM6-1
+CNRM-ESM2 (CNRM)
+CanESM5
+MIROC 6
+
+###9a. Read in future climate data
+Unhash list to see the relative path names and double check they are correct
+###9a. Near Future: 2021-2040 - SSP 245
+```{r}
+###BCC 245 2021-2040
+list <- list.files(path = "data/future_climate/BCC_245_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+#list
+BCC_245_2021_stack <- stack(list)
+#names should match
+names(BCC_245_2021_stack)
+names(predictors.cfp)
+
+##CanESM5-CM6
+list <- list.files(path = "data/future_climate/CanESM5_245_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+#list
+CanESM5_245_2021_stack <- stack(list)
+names(CanESM5_245_2021_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CanESM5_245_2021_stack)
+names(predictors.cfp)
+
+##CNRM CM6
+list <- list.files(path = "data/future_climate/CNRM_CM6_1_245_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CNRM_CM6_1_245_2021_stack <- stack(list)
+names(CNRM_CM6_1_245_2021_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CNRM_CM6_1_245_2021_stack)
+names(predictors.cfp)
+
+##CNRM ESM2 245 2021-2040
+list <- list.files(path = "data/future_climate/CNRM_ESM2_245_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+#list
+CNRM_ESM2_245_2021_stack <- stack(list)
+names(CNRM_ESM2_245_2021_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CNRM_ESM2_245_2021_stack)
+names(predictors.cfp)
+
+##MIROC6 245 2021-2040
+list <- list.files(path = "data/future_climate/MIROC6_245_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+#list
+MIROC6_245_2021_stack <- stack(list)
+names(MIROC6_245_2021_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(MIROC6_245_2021_stack)
+names(predictors.cfp)
+```
+
+### 9b. Near future 2021-2040, SSP 585
+```{r}
+###BCC 585 2021-2040
+list <- list.files(path = "data/future_climate/BCC_585_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+BCC_585_2021_stack <- stack(list)
+#names should match
+names(BCC_585_2021_stack)
+names(predictors.cfp)
+
+##CanESM5-CM6 585 2021-2040
+list <- list.files(path = "data/future_climate/CanESM5_585_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CanESM5_585_2021_stack <- stack(list)
+names(CanESM5_585_2021_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CanESM5_585_2021_stack)
+names(predictors.cfp)
+
+##CNRM CM6 585 2021-2040
+list <- list.files(path = "data/future_climate/CNRM_CM6_1_585_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CNRM_CM6_1_585_2021_stack <- stack(list)
+names(CNRM_CM6_1_585_2021_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CNRM_CM6_1_245_2021_stack)
+names(predictors.cfp)
+
+##CNRM ESM2 585 2021-2040
+list <- list.files(path = "data/future_climate/CNRM_ESM2_585_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CNRM_ESM2_585_2021_stack <- stack(list)
+names(CNRM_ESM2_585_2021_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CNRM_ESM2_585_2021_stack)
+names(predictors.cfp)
+
+##MIROC6 585 2021-2040
+list <- list.files(path = "data/future_climate/MIROC6_585_2021", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+MIROC6_585_2021_stack <- stack(list)
+names(MIROC6_585_2021_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(MIROC6_585_2021_stack)
+names(predictors.cfp)
+
+```
+
+###9c. Distant Future (2081-2100): SSP 245
+```{r}
+###BCC 245 2081-2100
+list <- list.files(path = "data/future_climate/BCC_245_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+BCC_245_2081_stack <- stack(list)
+#names should match
+names(BCC_245_2081_stack)
+names(predictors.cfp)
+
+##CanESM5-CM6 2081-2100 SSP 245
+list <- list.files(path = "data/future_climate/CanESM5_245_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CanESM5_245_2081_stack <- stack(list)
+names(CanESM5_245_2081_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CanESM5_245_2081_stack)
+names(predictors.cfp)
+
+##CNRM CM6 2081-2100 SSP 245
+list <- list.files(path = "data/future_climate/CNRM_CM6_1_245_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CNRM_CM6_1_245_2081_stack <- stack(list)
+names(CNRM_CM6_1_245_2081_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CNRM_CM6_1_245_2081_stack)
+names(predictors.cfp)
+
+##CNRM ESM2 245 2081-2100
+list <- list.files(path = "data/future_climate/CNRM_ESM2_245_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CNRM_ESM2_245_2081_stack <- stack(list)
+names(CNRM_ESM2_245_2081_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CNRM_ESM2_245_2081_stack)
+names(predictors.cfp)
+
+##MIROC6 245 2081-2100
+list <- list.files(path = "data/future_climate/MIROC6_245_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+MIROC6_245_2081_stack <- stack(list)
+names(MIROC6_245_2081_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(MIROC6_245_2081_stack)
+names(predictors.cfp)
+```
+
+###9d. Distant future (2081-2100) SSP 585
+```{r}
+###BCC 585 2021-2040
+list <- list.files(path = "data/future_climate/BCC_585_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+BCC_585_2081_stack <- stack(list)
+#names should match
+names(BCC_585_2081_stack)
+names(predictors.cfp)
+
+##CanESM5-CM6 585 2081-2100
+list <- list.files(path = "data/future_climate/CanESM5_585_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CanESM5_585_2081_stack <- stack(list)
+names(CanESM5_585_2081_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CanESM5_585_2081_stack)
+names(predictors.cfp)
+
+##CNRM CM6 585 2081-2100
+list <- list.files(path = "data/future_climate/CNRM_CM6_1_585_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CNRM_CM6_1_585_2081_stack <- stack(list)
+names(CNRM_CM6_1_585_2081_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CNRM_CM6_1_245_2081_stack)
+names(predictors.cfp)
+
+##CNRM ESM2 585 2081-2100
+list <- list.files(path = "data/future_climate/CNRM_ESM2_585_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+CNRM_ESM2_585_2081_stack <- stack(list)
+names(CNRM_ESM2_585_2081_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(CNRM_ESM2_585_2081_stack)
+names(predictors.cfp)
+
+##MIROC6 585 2081-2100
+list <- list.files(path = "data/future_climate/MIROC6_585_2081", full.names = TRUE, recursive = FALSE)
+list <- mixedsort(sort(list))
+list
+MIROC6_585_2081_stack <- stack(list)
+names(MIROC6_585_2081_stack) <- c("bio01","bio02","bio04","bio05","bio12","bio15","bio18","srad_ann")
+#names should match
+names(MIROC6_585_2081_stack)
+names(predictors.cfp)
+```
+
+
+###9e. Use Maxent model to project onto future raster climate stacks - Near future (2021-2040) - SSP 245 
+```{r}
+#BCC 245 2021-2040
+px_BCC2452021 <- predict(object = xm,
+                         x = BCC_245_2021_stack,
+                         filename = "data/output/suitability_rasters/245_2021/px_BCC2452021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_BCC2452021)
+
+#Can ESM5 245 2021-2040
+px_CanESM52452021 <- predict(object = xm,
+                         x = CanESM5_245_2021_stack,
+                         filename = "data/output/suitability_rasters/245_2021/px_CanESM52452021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CanESM52452021)
+
+#CNRM_CM6_1 245 2021-2040
+px_CNRMCM61_2452021 <- predict(object = xm,
+                         x = CNRM_CM6_1_245_2021_stack,
+                         filename = "data/output/suitability_rasters/245_2021/px_CNRMCM61_2452021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CNRMCM61_2452021)
+
+#CNRM_ESM2 245 2021-2040
+px_CNRMESM2_2452021 <- predict(object = xm,
+                         x = CNRM_ESM2_245_2021_stack,
+                         filename = "data/output/suitability_rasters/245_2021/px_CNRMESM2_2452021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CNRMESM2_2452021)
+
+#MIROC6 245 2021-2040
+px_MIROC6_2452021 <- predict(object = xm,
+                         x = MIROC6_245_2021_stack,
+                         filename = "data/output/suitability_rasters/245_2021/px_MIROC6_2452021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_MIROC6_2452021)
+```
+
+###9f. Use Maxent model to project onto future raster climate stacks - Distant Future (2081-2040) - SSP 245 
+```{r}
+#BCC 245 2081-2100
+px_BCC2452081 <- predict(object = xm,
+                         x = BCC_245_2081_stack,
+                         filename = "data/output/suitability_rasters/245_2081/px_BCC2452081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_BCC2452081)
+
+#Can ESM5 245 2081-2100
+px_CanESM52452081 <- predict(object = xm,
+                         x = CanESM5_245_2081_stack,
+                         filename = "data/output/suitability_rasters/245_2081/px_CanESM52452081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CanESM52452081)
+
+#CNRM_CM6_1 245 2081-2100
+px_CNRMCM61_2452081 <- predict(object = xm,
+                         x = CNRM_CM6_1_245_2081_stack,
+                         filename = "data/output/suitability_rasters/245_2081/px_CNRMCM61_2452081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CNRMCM61_2452081)
+
+#CNRM_ESM2 245 2081-2100
+px_CNRMESM2_2452081 <- predict(object = xm,
+                         x = CNRM_ESM2_245_2081_stack,
+                         filename = "data/output/suitability_rasters/245_2081/px_CNRMESM2_2452081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CNRMESM2_2452081)
+
+#MIROC6 245 2081-2040
+px_MIROC6_2452081 <- predict(object = xm,
+                         x = MIROC6_245_2081_stack,
+                         filename = "data/output/suitability_rasters/245_2081/px_MIROC6_2452081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_MIROC6_2452081)
+```
+##9g. Use Maxent model to project onto future raster climate stacks - Near Future (2021-2040) - SSP 585 
+```{r}
+#BCC 585 2021-2040
+px_BCC5852021 <- predict(object = xm,
+                         x = BCC_585_2021_stack,
+                         filename = "data/output/suitability_rasters/585_2021/px_BCC5852021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_BCC5852021)
+
+#Can ESM5 585 2021-2040
+px_CanESM55852021 <- predict(object = xm,
+                         x = CanESM5_585_2021_stack,
+                         filename = "data/output/suitability_rasters/585_2021/px_CanESM55852021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CanESM55852021)
+
+#CNRM_CM6_1 585 2021-2040
+px_CNRMCM61_5852021 <- predict(object = xm,
+                         x = CNRM_CM6_1_585_2021_stack,
+                         filename = "data/output/suitability_rasters/585_2021/px_CNRMCM61_5852021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CNRMCM61_5852021)
+
+#CNRM_ESM2 585 2021-2040
+px_CNRMESM2_5852021 <- predict(object = xm,
+                         x = CNRM_ESM2_585_2021_stack,
+                         filename = "data/output/suitability_rasters/585_2021/px_CNRMESM2_5852021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CNRMESM2_5852021)
+
+#MIROC6 585 2021-2040
+px_MIROC6_5852021 <- predict(object = xm,
+                         x = MIROC6_585_2021_stack,
+                         filename = "data/output/suitability_rasters/585_2021/px_MIROC6_5852021",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_MIROC6_5852021)
+```
+
+###9h. Use Maxent model to project onto future raster climate stacks - Distant Future (2081-2100) - SSP 585
+```{r}
+#BCC 585 2081-2100
+px_BCC5852081 <- predict(object = xm,
+                         x = BCC_585_2081_stack,
+                         filename = "data/output/suitability_rasters/585_2081/px_BCC5852081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_BCC5852081)
+
+#Can ESM5 585 2081-2100
+px_CanESM55852081 <- predict(object = xm,
+                         x = CanESM5_585_2081_stack,
+                         filename = "data/output/suitability_rasters/585_2081/px_CanESM55852081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CanESM55852081)
+
+#CNRM_CM6_1 585 2081-2100
+px_CNRMCM61_5852081 <- predict(object = xm,
+                         x = CNRM_CM6_1_585_2081_stack,
+                         filename = "data/output/suitability_rasters/585_2081/px_CNRMCM61_5852081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CNRMCM61_5852081)
+
+#CNRM_ESM2 585 2081-2100
+px_CNRMESM2_5852081 <- predict(object = xm,
+                         x = CNRM_ESM2_585_2081_stack,
+                         filename = "data/output/suitability_rasters/585_2081/px_CNRMESM2_5852081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_CNRMESM2_5852081)
+
+#MIROC6 585 2081-2100
+px_MIROC6_5852081 <- predict(object = xm,
+                         x = MIROC6_585_2081_stack,
+                         filename = "data/output/suitability_rasters/585_2081/px_MIROC6_5852081",
+                         progress = "text",
+                         args = c("doclamp=TRUE"))
+
+plot(px_MIROC6_5852081)
+```
+
+
+###9d.Make model prediction averages for each scenario
+```{r}
+####245 Near Future (2021-2080)
+#Read in future climate suitability raster and create raster stack
+list <- list.files(path = "data/output/suitability_rasters/245_2021", pattern = "\\.grd$", full.names = TRUE)
+sort.list(list)
+list #check that its right
+future_rasters_245_2021 <- stack(list)
+
+#set names for layers
+list <- list.files(path = "data/output/suitability_rasters/245_2021", pattern = "\\.grd$") #doesnt need full name
+sort.list(list)
+list
+names(future_rasters_245_2021) <- c(list)
+names(future_rasters_245_2021) #now has names for each layer
+
+#calculate mean
+mean_future_245_2021 <- calc(future_rasters_245_2021, fun = mean)
+plot(mean_future_245_2021)
+
+#####245 Distant Future (2081-2100)
+#Read in future climate suitability raster and create raster stack
+list <- list.files(path = "data/output/suitability_rasters/245_2081", pattern = "\\.grd$", full.names = TRUE)
+sort.list(list)
+list #check that its right
+future_rasters_245_2081 <- stack(list)
+
+#set names for layers
+list <- list.files(path = "data/output/suitability_rasters/245_2081", pattern = "\\.grd$") #doesnt need full name
+sort.list(list)
+list
+names(future_rasters_245_2081) <- c(list)
+names(future_rasters_245_2081) #now has names for each layer
+
+#calculate mean
+mean_future_245_2081 <- calc(future_rasters_245_2081, fun = mean)
+plot(mean_future_245_2081)
+
+
+```
+
+###9XX. Create binary maps
+```{r}
+#make a copy for binary rasters
+binary_future_rasters <- future_rasters
+#make layers binary based on MaxTSS threshold
+binary_future_rasters[binary_future_rasters < tr] <- 0
+binary_future_rasters[binary_future_rasters > tr] <- 1
+plot(binary_future_rasters)
+
+#writeRaster(binary_future_rasters, "data/output/binary_rasters/binary", format = "GTiff", bylayer = TRUE, suffix = "names")
+```
+
+
+###9XX. Create rasters that represent expansion/loss/no change in habitat
+Projected-Current = scenario
+2 - 0 = 2 (expansion or gain)
+0 - 1 = -1 (loss)
+2 - 1 = 1 (no change in range, remains constant)
+0 - 0 = 0 (was never there), plots as -2 (see below)
+Need to change 0 to -2 so it will plot as the lowest value for ggplot
+```{r}
+#replace 1s with 2s so we get unique valies for scenarios listed above
+binary_future_rasters[binary_future_rasters == 1] <-2
+
+#calculate difference to get one of the four values listed above in the raster stack
+binary_future_rasters_rangediff <- binary_future_rasters - binary_px
+binary_future_rasters_rangediff
+
+#replace names again, they were changed after math
+names(binary_future_rasters_rangediff) <- list
+plot(binary_future_rasters_rangediff)
+
+#the "was never there" scenario needs to be plotted last in ggplot so I replaced 0 with -2s
+binary_future_rasters_rangediff[binary_future_rasters_rangediff == 0] <- -2
+
+```
+
+###9f. Convert rasters (binary and suitability) into dataframes for plotting with ggplot
+Use for loop to iteratively turn each layer in the raster stack into a dataframe with xy coordinates
+```{r}
+###Suitability
+#BCC
+suitability_BCC2452021_df <- as.data.frame(future_rasters[[1]], xy = TRUE)
+head(suitability_BCC2452021_df)
+suitability_BCC2452081_df <- as.data.frame(future_rasters[[2]], xy = TRUE)
+head(suitability_BCC2452081_df)
+suitability_BCC5852021_df <- as.data.frame(future_rasters[[3]], xy = TRUE)
+head(suitability_BCC5852021_df)
+suitability_BCC5852081_df <- as.data.frame(future_rasters[[4]], xy = TRUE)
+head(suitability_BCC5852081_df)
+
+#CNRM
+suitability_CNRM2452021_df <- as.data.frame(future_rasters[[5]], xy = TRUE)
+head(suitability_CNRM2452021_df)
+suitability_CNRM2452081_df <- as.data.frame(future_rasters[[6]], xy = TRUE)
+head(suitability_CNRM2452081_df)
+suitability_CNRM5852021_df <- as.data.frame(future_rasters[[7]], xy = TRUE)
+head(suitability_CNRM5852021_df)
+suitability_CNRM5852081_df <- as.data.frame(future_rasters[[8]], xy = TRUE)
+head(suitability_CNRM5852081_df)
+
+###Binary
+#BCC
+binary_diff_BCC2452021_df <- as.data.frame(binary_future_rasters_rangediff[[1]], xy = TRUE)
+head(binary_diff_BCC2452021_df)
+binary_diff_BCC2452081_df <- as.data.frame(binary_future_rasters_rangediff[[2]], xy = TRUE)
+head(binary_diff_BCC2452081_df)
+binary_diff_BCC5852021_df <- as.data.frame(binary_future_rasters_rangediff[[3]], xy = TRUE)
+head(binary_diff_BCC5852021_df)
+binary_diff_BCC5852081_df <- as.data.frame(binary_future_rasters_rangediff[[4]], xy = TRUE)
+head(binary_diff_BCC5852081_df)
+
+#CNRM
+binary_diff_CNRM2452021_df <- as.data.frame(binary_future_rasters_rangediff[[5]], xy = TRUE)
+head(binary_diff_CNRM2452021_df)
+binary_diff_CNRM2452081_df <- as.data.frame(binary_future_rasters_rangediff[[6]], xy = TRUE)
+head(binary_diff_CNRM2452081_df)
+binary_diff_CNRM5852021_df <- as.data.frame(binary_future_rasters_rangediff[[7]], xy = TRUE)
+head(binary_diff_CNRM5852021_df)
+binary_diff_CNRM5852081_df <- as.data.frame(binary_future_rasters_rangediff[[8]], xy = TRUE)
+head(binary_diff_CNRM5852081_df)
+
+
+#Suitability - not sure why this is not working?? Need the colon!
+#for (i in i:8) {
+  #suitability <- as.data.frame(future_rasters[[i]], xy = TRUE)
+  #nam <- paste("suitability_", names(future_rasters[[i]]), "_df", sep = "")
+  #assign(nam, suitability)
+#}
+
+```
+
+###9. Plot Suitability rasters with ggplot
+```{r}
+suitability_BCC2452021_gg <- ggplot() +
+  geom_raster(data = suitability_BCC2452021_df, aes(x = x, y = y, fill = BCC_245_2021.grd)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+suitability_BCC2452021_gg 
+
+suitability_BCC2452081_gg <- ggplot() +
+  geom_raster(data = suitability_BCC2452081_df, aes(x = x, y = y, fill = BCC_245_2081.grd)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+suitability_BCC2452081_gg 
+
+suitability_BCC5852021_gg <- ggplot() +
+  geom_raster(data = suitability_BCC5852021_df, aes(x = x, y = y, fill = BCC_585_2021.grd)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+suitability_BCC5852021_gg 
+
+suitability_BCC5852081_gg <- ggplot() +
+  geom_raster(data = suitability_BCC5852081_df, aes(x = x, y = y, fill = BCC_585_2081.grd)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+suitability_BCC5852081_gg
+
+suitability_CNRM2452021_gg <- ggplot() +
+  geom_raster(data = suitability_CNRM2452021_df, aes(x = x, y = y, fill = CNRM_245_2021.grd)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+suitability_CNRM2452021_gg
+
+suitability_CNRM2452081_gg <- ggplot() +
+  geom_raster(data = suitability_CNRM2452081_df, aes(x = x, y = y, fill = CNRM_245_2081.grd)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+suitability_CNRM2452081_gg
+
+suitability_CNRM5852021_gg <- ggplot() +
+  geom_raster(data = suitability_CNRM5852021_df, aes(x = x, y = y, fill = CNRM_585_2021.grd)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+suitability_CNRM5852021_gg
+
+suitability_CNRM5852081_gg <- ggplot() +
+  geom_raster(data = suitability_CNRM5852081_df, aes(x = x, y = y, fill = CNRM_585_2081.grd)) +
+  scale_fill_viridis(limits = c(0,1), na.value = "transparent") + #viridis color 
+  coord_sf() + #need to tell ggplot these are spatial data
+  xlab("Longitude") +
+  ylab("Latitude") +
+  labs(fill = "Suitability") +
+  theme_bw(base_size = 14)
+
+suitability_CNRM5852081_gg
+
+```
+
+###9h. Make binary maps in ggplot
+```{r}
+binary_diff_BCC2452021_gg <- ggplot() +
+  geom_raster(data = binary_diff_BCC2452021_df, aes(x = x, y = y, fill = as.factor(BCC_245_2021.grd))) +
+  scale_fill_manual(name = "Range Change", values=c("gray","#440154FF","#29AF7FFF","#FDE725FF","transparent"), labels = c("California Floristic Province","Loss","No Change","Gain",""), guide = guide_legend(reverse = TRUE)) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_diff_BCC2452021_gg
+
+binary_diff_BCC2452081_gg <- ggplot() +
+  geom_raster(data = binary_diff_BCC2452081_df, aes(x = x, y = y, fill = as.factor(BCC_245_2081.grd))) +
+  scale_fill_manual(name = "Range Change", values=c("gray","#440154FF","#29AF7FFF","#FDE725FF","transparent"), labels = c("California Floristic Province","Loss","No Change","Gain",""), guide = guide_legend(reverse = TRUE)) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_diff_BCC2452081_gg
+
+binary_diff_BCC5852021_gg <- ggplot() +
+  geom_raster(data = binary_diff_BCC5852021_df, aes(x = x, y = y, fill = as.factor(BCC_585_2021.grd))) +
+  scale_fill_manual(name = "Range Change", values=c("gray","#440154FF","#29AF7FFF","#FDE725FF","transparent"), labels = c("California Floristic Province","Loss","No Change","Gain",""), guide = guide_legend(reverse = TRUE)) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_diff_BCC5852021_gg
+
+binary_diff_BCC5852081_gg <- ggplot() +
+  geom_raster(data = binary_diff_BCC5852081_df, aes(x = x, y = y, fill = as.factor(BCC_585_2081.grd))) +
+  scale_fill_manual(name = "Range Change", values=c("gray","#440154FF","#29AF7FFF","transparent"), labels = c("California Floristic Province","Loss","No Change",""), guide = guide_legend(reverse = TRUE)) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_diff_BCC5852081_gg
+
+##CNRM###
+binary_diff_CNRM2452021_gg <- ggplot() +
+  geom_raster(data = binary_diff_CNRM2452021_df, aes(x = x, y = y, fill = as.factor(CNRM_245_2021.grd))) +
+  scale_fill_manual(name = "Range Change", values=c("gray88","#440154FF","#29AF7FFF","#FDE725FF","transparent"), labels = c("California Floristic Province","Loss","No Change","Gain",""), guide = guide_legend(reverse = TRUE)) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_diff_CNRM2452021_gg
+
+binary_diff_CNRM2452081_gg <- ggplot() +
+  geom_raster(data = binary_diff_CNRM2452081_df, aes(x = x, y = y, fill = as.factor(CNRM_245_2081.grd))) +
+  scale_fill_manual(name = "Range Change", values=c("gray88","#440154FF","#29AF7FFF","#FDE725FF","transparent"), labels = c("California Floristic Province","Loss","No Change","Gain",""), guide = guide_legend(reverse = TRUE)) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_diff_CNRM2452081_gg
+
+binary_diff_CNRM5852021_gg <- ggplot() +
+  geom_raster(data = binary_diff_CNRM5852021_df, aes(x = x, y = y, fill = as.factor(CNRM_585_2021.grd))) +
+  scale_fill_manual(name = "Range Change", values=c("gray88","#440154FF","#29AF7FFF","#FDE725FF","transparent"), labels = c("California Floristic Province","Loss","No Change","Gain",""), guide = guide_legend(reverse = TRUE)) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_diff_CNRM5852021_gg
+
+binary_diff_CNRM5852081_gg <- ggplot() +
+  geom_raster(data = binary_diff_CNRM5852081_df, aes(x = x, y = y, fill = as.factor(CNRM_585_2081.grd))) +
+  scale_fill_manual(name = "Range Change", values=c("gray88","#440154FF","#29AF7FFF","#FDE725FF","transparent"), labels = c("California Floristic Province","Loss","No Change","Gain",""), guide = guide_legend(reverse = TRUE)) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+binary_diff_CNRM5852081_gg
+```
+
+
+#10. Evaluate future projection layers to determine if there is any extrapolation that is occuring
+```{r}
+#generate dataframes
+current <- as.data.frame(predictors.cfp)
+
+#mess function
+mess_BCC_245_2021 <- mess(x = BCC_245_2021_stack,
+                          v = current,
+                          full = FALSE,
+                          filename = "data/output/MESS/BCC_245_2021.tif")
+
+plot(mess_BCC_245_2021)
+```
+
 

@@ -1,0 +1,1182 @@
+---
+title: "Phenology Models"
+author: "Natalie Love"
+date: "9/2/2020"
+output: html_document
+---
+
+This code is designed to construct a phenoclimatic model (generalized linear model) using a dataset of herbarium specimens that quantifies the sensitivity of the day of year of collection to climate. This model can then be used to predict the DOY under future climatic conditions.
+```{r}
+library(tidyverse)
+library(raster)
+library(sp)
+library(sf)
+library(rgdal)
+library(prism)
+library(viridis)
+library(car)
+```
+
+
+#1. Create long-term mean climate rasters
+###1a. Download prism data
+4km grid
+Only need to do this once!
+```{r}
+#options(prism.path = "data/PRISM/temp")
+#get_prism_annual(type = "tmean",
+                 #years = 1895:2013,
+                 #keepZip = FALSE)
+
+#options(prism.path = "data/PRISM/ppt")
+#get_prism_annual(type = "ppt",
+                 #years = 1895:2013,
+                 #keepZip = FALSE)
+```
+
+###1b. Read in rasters and calculate long-term mean.
+1895-1981
+```{r}
+###TEMPERATURE###
+#read in rasters, currently .bil format (years 1985-1980)
+list <- list.files(path = "data/PRISM/temp", pattern = "\\.bil$", recursive = TRUE, full.names = TRUE)
+list
+
+#create raster stack and rename each layer as a year
+MAT_LT_stack <- stack(list)
+plot(MAT_LT_stack[[1:10]])
+layer_names <- 1895:2013
+names(MAT_LT_stack) <- layer_names
+names(MAT_LT_stack)
+
+#use bio01 from worldclim data as a template for future transformations of the long-term mean climate data from PRISM
+mask <- predictors.cfp[[1]]
+
+#Reproject all layers at once
+MAT_LT_stack_repro <- projectRaster(MAT_LT_stack, mask)
+
+
+#write so we can use these later
+writeRaster(MAT_LT_stack_repro, filename = "data/PRISM/MAT_exported/MAT_LT", format = "GTiff", bylayer = TRUE, suffix = "names")
+
+#Calculate mean across all years (1895-1980)
+MAT_1895_1970 <- MAT_LT_stack_repro[[1:76]]
+names(MAT_1895_1970) #check this is the right years
+MAT_LT_1 <- calc(MAT_1895_1970, fun = mean)
+plot(MAT_LT_1)
+
+###PPT####
+list <- list.files(path = "data/PRISM/ppt", pattern = "\\.bil$", recursive = TRUE, full.names = TRUE)
+list
+PPT_LT_stack <- stack(list)
+names(PPT_LT_stack) <- layer_names
+names(PPT_LT_stack)
+
+#reproject entire raster stack and export, going to need these later to extract values
+PPT_LT_stack_repro <- projectRaster(PPT_LT_stack, mask)
+names(PPT_LT_stack_repro)
+
+
+#Write these layers so I can access them later
+writeRaster(PPT_LT_stack_repro, filename = "data/PRISM/ppt_exported/MAP_LT", format = "GTiff", bylayer = TRUE, suffix = "names")
+
+#Calculate mean across years (1895-1970)
+MAP_1895_1970 <- PPT_LT_stack_repro[[1:76]]
+names(MAP_1895_1970)
+MAP_LT_1 <- calc(MAP_1895_1970, fun = mean)
+plot(MAP_LT_1)
+
+#make sure everything matches among rasters
+MAT_LT_1
+MAP_LT_1
+```
+
+##1c. Mask to match other rasters
+```{r}
+MAT_LT <- mask(MAT_LT_1, mask)
+plot(MAT_LT)
+
+MAP_LT <- mask(MAP_LT_1, mask)
+plot(MAP_LT)
+
+#write the long-term mean rasters
+writeRaster(MAT_LT, filename = "data/PRISM/long_term_mean_rasters/MAT_LT_1895_1970.tif", format = "GTiff")
+writeRaster(MAP_LT, filename = "data/PRISM/long_term_mean_rasters/MAP_LT_1895_1970.tif", format = "GTiff")
+```
+###1d. Plots to explore similarities between climate datasources
+```{r}
+plot(MAT_LT - predictors.cfp[[1]])
+MAT_diff <- MAT_LT - predictors.cfp[[1]]
+hist(MAT_diff)
+
+plot(MAP_LT - predictors.cfp[[5]])
+MAP_diff <- MAP_LT - predictors.cfp[[5]]
+hist(MAP_diff)
+```
+
+
+#2. Extract long-term mean values and YOC values and then calculate anomalies
+##2a. Bring in cleaned herbarium data
+```{r}
+#coordinates in columns latitude and longitude
+tort_herbarium_1 <- read_csv("data/occurrences/all_spec_1902_2013_20perdatafiltered.csv")
+
+#select necessary rows
+tort_herbarium <- tort_herbarium_1[,1:27]
+```
+
+###2b. Loop to extract YOC collection MAT and MAP values for each collection location and year
+```{r}
+#create empty dataframe to fill with YOC climate
+YOC_MAT <- vector(mode = "double")
+YOC_MAP <- vector(mode = "double")
+
+
+#loop
+for(i in 1:nrow(tort_herbarium)){
+#first identify year
+  YOC <- tort_herbarium$year[i]
+
+#YOC temperature  
+  raster_t <- raster(paste("data/PRISM/MAT_exported/MAT_LT_X", YOC, ".tif", sep = ""))
+  MAT_val <- raster::extract(raster_t, tort_herbarium[i, c(17,16)])
+  YOC_MAT[i] <- MAT_val 
+  
+#YOC PPT
+  raster_p <- raster(paste("data/PRISM/ppt_exported/MAP_LT_X", YOC, ".tif", sep = ""))
+  MAP_val <- raster::extract(raster_p, tort_herbarium[i, c(17,16)])
+  YOC_MAP[i] <- MAP_val
+}
+
+
+```
+
+###2c. Merge YOC to main dataframe
+```{r}
+tort_herb_climate <- cbind(tort_herbarium, YOC_MAP, YOC_MAT)
+
+#make sure its there and looks ok
+head(tort_herb_climate[1:10,24:29])
+```
+
+###2e. Get Long-term mean data values
+```{r}
+#read in rasters
+MAT_LT <- raster("data/PRISM/long_term_mean_rasters/MAT_LT_1895_1970.tif")
+plot(MAT_LT)
+
+MAP_LT <- raster("data/PRISM/long_term_mean_rasters/MAP_LT_1895_1970.tif")
+plot(MAP_LT)
+
+#extract data
+MAT_longterm <- raster::extract(MAT_LT, tort_herbarium[,c(17,16)])
+MAP_longterm <- raster::extract(MAP_LT, tort_herbarium[,c(17,16)])
+
+#bind to main dataframe
+tort_herb_climate <- cbind(tort_herb_climate, MAT_longterm, MAP_longterm)
+head(tort_herb_climate[1:10,27:31])
+
+#line drop rows that have NAs for climate variables (i.e., they are outside the CFP)
+tort_herb_climate <- tort_herb_climate[!is.na(tort_herb_climate$MAT_longterm),]
+
+```
+
+###2f. Calculate anomalies
+```{r}
+tort_herb_climate <- tort_herb_climate %>% 
+  mutate(MAT_anom = YOC_MAT - MAT_longterm) %>%
+  mutate(MAP_anom = YOC_MAP - MAP_longterm)
+
+head(tort_herb_climate)
+```
+#3. Designate warm vs. cool groups
+```{r}
+for (i in 1:nrow(tort_herb_climate)){
+  if (tort_herb_climate$MAT_longterm[i] <= median(tort_herb_climate$MAT_longterm)){
+  tort_herb_climate$temp_group[i] <- "C"  
+  } else {tort_herb_climate$temp_group[i] <- "W"}
+}  
+
+#check if that worked
+c <- tort_herb_climate %>% filter(temp_group == "C")
+w <- tort_herb_climate %>% filter(temp_group == "W")
+
+
+max(c$MAT_longterm) #max MAT at cool sites should be less than or equal to median MAT
+min(w$MAT_longterm) #min MAT at warm sites should be just greater than median MAT
+
+```
+
+
+#4. Construct phenoclimatic model
+```{r}
+cool_lm <- lm(DOY ~ 
+     PI +
+     MAT_longterm +
+     MAP_longterm +
+     MAT_anom +
+     MAP_anom,
+   data = c)
+
+warm_lm <- lm(DOY ~ 
+     PI +
+     MAT_longterm +
+     MAP_longterm +
+     MAT_anom +
+     MAP_anom,
+   data = w)
+  
+#full model  
+lm1 <- lm(DOY ~ 
+     PI +
+     MAT_longterm +
+     MAP_longterm +
+     MAT_anom +
+     MAP_anom +
+     temp_group +
+     temp_group*MAT_longterm,
+   data = tort_herb_climate)
+
+summary(cool_lm)
+summary(warm_lm)
+
+#check VIF (everything is less than 2)
+vif(cool_lm)
+vif(warm_lm)
+```
+
+##5. Create cool vs. warm region raster
+Need to create a binary raster with cool warm regions then mask to the current distribution of S. tortuosus
+Warm = 3
+Cool = 2
+```{r}
+cwregion_raster <- predictors.cfp[[1]]
+cwregion_raster[cwregion_raster <= median(tort_herb_climate$MAT_longterm)] <- 2
+cwregion_raster[cwregion_raster > median(tort_herb_climate$MAT_longterm)] <- 3
+
+plot(cwregion_raster)
+
+#create copy of binary mask so I can make a mask where the CFP outside the range (where values = 0) become NA
+binary_px_mask <- binary_px
+plot(binary_px_mask)
+
+binary_px_mask[binary_px_mask == 0] <- NA
+plot(binary_px_mask)
+
+#Mask cool/warm region raster to binary range extent
+cwregion_tort <- mask(cwregion_raster, binary_px_mask)
+plot(cwregion_tort)
+
+#crop cw_raster to extent of of PRISM data (not in Baja)
+cwregion_tort <- crop(cwregion_tort, ext)
+plot(cwregion_tort)
+```
+###5a. Create background layer
+Need to make a background layer that represents the CFP for visual purposes
+```{r}
+bio1[bio1 < 20] <- 1
+bio1
+plot(bio1)
+
+#rename
+cfp_background <- bio1
+```
+
+### 5b. Plot with ggplot
+```{r}
+cwregion_tort_df <- as.data.frame(cwregion_tort, xy = TRUE)
+cfp_background_df <- as.data.frame(cfp_background, xy = TRUE)
+
+cwregion_gg <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = cwregion_tort_df, aes(x = x, y = y, fill = as.factor(bio01))) +
+  scale_fill_manual(name = "Temperature Region", values = c("#4393C3","#D6604D","transparent"), labels = c("cool","warm","")) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw(base_size = 14)
+
+cwregion_gg
+
+
+```
+
+#6. Future climate scenarios: Read in, make anomaly layers
+Need to read in MAT and MAP layers (bio01 and bio12, respectively) and then use them to create anomaly layers
+```{r}
+###BCC###
+#BCC 245 2021-2040
+BCC_245_2021_MAT <- raster("data/future_climate/BCC_245_2021/bio01.tif")
+BCC_245_2021_MAP <- raster("data/future_climate/BCC_245_2021/bio12.tif")
+
+#BCC 245 2081-2100
+BCC_245_2081_MAT <- raster("data/future_climate/BCC_245_2081/bio01.tif")
+BCC_245_2081_MAP <- raster("data/future_climate/BCC_245_2081/bio12.tif")
+
+#BCC 585 2021-2040
+BCC_585_2021_MAT <- raster("data/future_climate/BCC_585_2021/bio01.tif")
+BCC_585_2021_MAP <- raster("data/future_climate/BCC_585_2021/bio12.tif")
+
+#BCC 585 2081-2100
+BCC_585_2081_MAT <- raster("data/future_climate/BCC_585_2081/bio01.tif")
+BCC_585_2081_MAP <- raster("data/future_climate/BCC_585_2081/bio12.tif")
+
+####CNRM#####
+#CNRM 245 2021-2040
+CNRM_245_2021_MAT <- raster("data/future_climate/CNRM_245_2021/bio01.tif")
+CNRM_245_2021_MAP <- raster("data/future_climate/CNRM_245_2021/bio12.tif")
+
+#CNRM 245 2081-2100
+CNRM_245_2081_MAT <- raster("data/future_climate/CNRM_245_2081/bio01.tif")
+CNRM_245_2081_MAP <- raster("data/future_climate/CNRM_245_2081/bio12.tif")
+
+#CNRM 585 2021-2040
+CNRM_585_2021_MAT <- raster("data/future_climate/CNRM_585_2021/bio01.tif")
+CNRM_585_2021_MAP <- raster("data/future_climate/CNRM_585_2021/bio12.tif")
+
+#CNRM 585 2081-2100
+CNRM_585_2081_MAT <- raster("data/future_climate/CNRM_585_2081/bio01.tif")
+CNRM_585_2081_MAP <- raster("data/future_climate/CNRM_585_2081/bio12.tif")
+```
+
+###6a. Create anomaly layers for BCC Model
+Long-term mean layers are MAT_LT and MAP_LT. I also need to rename the raster layer within the raster metadata using `names()` so that when I use the predict function, it will know which variable matches with which layer
+Names in the model are:
+MAT_longterm
+MAP_longterm
+MAT_anom
+MAP_anom
+```{r}
+###BCC###
+#BCC 245 2021-2040
+BCC_245_2021_MATanom <- BCC_245_2021_MAT - MAT_LT
+names(BCC_245_2021_MATanom) <- "MAT_anom"
+plot(BCC_245_2021_MATanom)
+hist(BCC_245_2021_MATanom)
+
+BCC_245_2021_MAPanom <- BCC_245_2021_MAP - MAP_LT
+names(BCC_245_2021_MAPanom) <- "MAP_anom"
+plot(BCC_245_2021_MAPanom)
+hist(BCC_245_2021_MAPanom)
+
+#BCC 245 2081-2100
+BCC_245_2081_MATanom <- BCC_245_2081_MAT - MAT_LT
+names(BCC_245_2081_MATanom) <- "MAT_anom"
+plot(BCC_245_2081_MATanom)
+hist(BCC_245_2081_MATanom)
+
+BCC_245_2081_MAPanom <- BCC_245_2081_MAP - MAP_LT
+names(BCC_245_2081_MAPanom) <- "MAP_anom"
+plot(BCC_245_2081_MAPanom)
+hist(BCC_245_2081_MAPanom)
+
+#BCC 585 2021-2040
+BCC_585_2021_MATanom <- BCC_585_2021_MAT - MAT_LT
+names(BCC_585_2021_MATanom) <- "MAT_anom"
+plot(BCC_585_2021_MATanom)
+hist(BCC_585_2021_MATanom)
+
+BCC_585_2021_MAPanom <- BCC_585_2021_MAP - MAP_LT
+names(BCC_585_2021_MAPanom) <- "MAP_anom"
+plot(BCC_585_2021_MAPanom)
+hist(BCC_585_2021_MAPanom)
+
+#BCC 585 2081-2100
+BCC_585_2081_MATanom <- BCC_585_2081_MAT - MAT_LT
+names(BCC_585_2081_MATanom) <- "MAT_anom"
+plot(BCC_585_2081_MATanom)
+hist(BCC_585_2081_MATanom)
+
+BCC_585_2081_MAPanom <- BCC_585_2081_MAP - MAP_LT
+names(BCC_585_2081_MAPanom) <- "MAP_anom"
+plot(BCC_585_2081_MAPanom)
+hist(BCC_585_2081_MAPanom)
+```
+
+###6b. Create anomaly layers for CNRM
+Long-term mean layers are MAT_LT and MAP_LT. I also need to rename the raster layer within the raster metadata using `names()` so that when I use the predict function, it will know which variable matches with which layer
+Names in the model are:
+MAT_longterm
+MAP_longterm
+MAT_anom
+MAP_anom
+```{r}
+###CNRM###
+#CNRM 245 2021-2040
+CNRM_245_2021_MATanom <- CNRM_245_2021_MAT - MAT_LT
+names(CNRM_245_2021_MATanom) <- "MAT_anom"
+plot(CNRM_245_2021_MATanom)
+hist(CNRM_245_2021_MATanom)
+
+CNRM_245_2021_MAPanom <- CNRM_245_2021_MAP - MAP_LT
+names(CNRM_245_2021_MAPanom) <- "MAP_anom"
+plot(CNRM_245_2021_MAPanom)
+hist(CNRM_245_2021_MAPanom)
+
+#CNRM 245 2081-2100
+CNRM_245_2081_MATanom <- CNRM_245_2081_MAT - MAT_LT
+names(CNRM_245_2081_MATanom) <- "MAT_anom"
+plot(CNRM_245_2081_MATanom)
+hist(CNRM_245_2081_MATanom)
+
+CNRM_245_2081_MAPanom <- CNRM_245_2081_MAP - MAP_LT
+names(CNRM_245_2081_MAPanom) <- "MAP_anom"
+plot(CNRM_245_2081_MAPanom)
+hist(CNRM_245_2081_MAPanom)
+
+#CNRM 585 2021-2040
+CNRM_585_2021_MATanom <- CNRM_585_2021_MAT - MAT_LT
+names(CNRM_585_2021_MATanom) <- "MAT_anom"
+plot(CNRM_585_2021_MATanom)
+hist(CNRM_585_2021_MATanom)
+
+CNRM_585_2021_MAPanom <- CNRM_585_2021_MAP - MAP_LT
+names(CNRM_585_2021_MAPanom) <- "MAP_anom"
+plot(CNRM_585_2021_MAPanom)
+hist(CNRM_585_2021_MAPanom)
+
+#CNRM 585 2081-2100
+CNRM_585_2081_MATanom <- CNRM_585_2081_MAT - MAT_LT
+names(CNRM_585_2081_MATanom) <- "MAT_anom"
+plot(CNRM_585_2081_MATanom)
+hist(CNRM_585_2081_MATanom)
+
+CNRM_585_2081_MAPanom <- CNRM_585_2081_MAP - MAP_LT
+names(CNRM_585_2081_MAPanom) <- "MAP_anom"
+plot(CNRM_585_2081_MAPanom)
+hist(CNRM_585_2081_MAPanom)
+```
+###6c. Create anomalies for current climate
+Not totally sure what to use here but currently using WorldClim 1970-2000 averages
+```{r}
+bio01 <- predictors.cfp[[1]]
+bio12 <- predictors.cfp[[5]]
+
+bio01_anom <- bio01 - MAT_LT
+names(bio01_anom) <- "MAT_anom"
+plot(bio01_anom)
+hist(bio01_anom)
+
+bio12_anom <- bio12 - MAP_LT
+names(bio12_anom) <- "MAP_anom"
+plot(bio12_anom)
+hist(bio12_anom)
+```
+
+
+##6d. Re-name long-term mean layers to match model
+```{r}
+names(MAT_LT) <- "MAT_longterm"
+names(MAP_LT) <- "MAP_longterm"
+```
+
+#7 Make a raster to represent peak flower and peak fruit
+Use CFP background, replace 1s with 2.5 and 4
+flower PI = 2.5
+fruit PI = 4
+```{r}
+PI_flower <- cfp_background
+PI_fruit <- cfp_background
+
+PI_flower[PI_flower == 1] <- 2.5
+names(PI_flower) <- "PI"
+
+PI_fruit[PI_fruit == 1] <- 4
+names(PI_fruit) <- "PI"
+```
+
+#8. Long-term mean and PI rasters rasters so everything is the same extent
+```{r}
+MAT_LT <- crop(MAT_LT, BCC_245_2021_MAPanom)
+plot(MAT_LT)
+
+MAP_LT <- crop(MAP_LT, BCC_245_2021_MAPanom)
+plot(MAP_LT)
+
+ext <- extent(BCC_245_2021_MAP)
+PI_flower <- mask(PI_flower, MAT_LT)
+PI_flower <- crop(PI_flower, ext)
+plot(PI_flower)
+
+PI_fruit <- mask(PI_fruit, MAT_LT)
+PI_fruit <- crop(PI_fruit, ext)
+plot(PI_fruit)
+```
+
+#9. Create Raster stacks for one current and each future time period 
+I'm not sure if it matters, but I am going to stack them in the same order they appear in the model
+PI
+MAT_longterm
+MAP_longterm
+MAT_anom
+MAP_anom
+
+###9a. Current climate
+```{r}
+current_fl <- stack(PI_flower, MAT_LT, MAP_LT, bio01_anom, bio12_anom)
+names(current_fl)
+```
+
+
+###9b. BCC Models
+```{r}
+BCC_245_2021_fl <- stack(PI_flower, BCC_245_2021_MATanom, BCC_245_2021_MAPanom, MAT_LT, MAP_LT)
+#check that the names are correct
+names(BCC_245_2021_fl)
+
+BCC_245_2081_fl <- stack(PI_flower, BCC_245_2081_MATanom, BCC_245_2081_MAPanom, MAT_LT, MAP_LT)
+names(BCC_245_2081_fl)
+
+BCC_585_2021_fl <- stack(PI_flower, BCC_585_2021_MATanom, BCC_585_2021_MAPanom, MAT_LT, MAP_LT)
+names(BCC_585_2021_fl)
+
+BCC_585_2081_fl <- stack(PI_flower, BCC_585_2081_MATanom, BCC_585_2081_MAPanom, MAT_LT, MAP_LT)
+names(BCC_585_2081_fl)
+```
+
+###9c. CNRM Models
+```{r}
+CNRM_245_2021_fl <- stack(PI_flower, CNRM_245_2021_MATanom, CNRM_245_2021_MAPanom, MAT_LT, MAP_LT)
+names(CNRM_245_2021_fl)
+
+CNRM_245_2081_fl <- stack(PI_flower, CNRM_245_2081_MATanom, CNRM_245_2081_MAPanom, MAT_LT, MAP_LT)
+names(CNRM_245_2081_fl)
+
+CNRM_585_2021_fl <- stack(PI_flower, CNRM_585_2021_MATanom, CNRM_585_2021_MAPanom, MAT_LT, MAP_LT)
+names(CNRM_585_2021_fl)
+
+CNRM_585_2081_fl <- stack(PI_flower, CNRM_585_2081_MATanom, CNRM_585_2081_MAPanom, MAT_LT, MAP_LT)
+names(CNRM_585_2081_fl)
+```
+
+
+#10. Predict DOY based on future climate conditions
+###10a. Make Prediction on current climate
+```{r}
+current_fl_DOY_c <- raster::predict(object = current_fl,
+                                    model = cool_lm)
+
+plot(current_fl_DOY_c)
+
+current_fl_DOY_w <- raster::predict(object = current_fl,
+                                       model = warm_lm)
+
+plot(current_fl_DOY_w)
+
+
+
+#make DF for ggplot
+current_fl_DOY_c_df <- as.data.frame(current_fl_DOY_c, xy = TRUE)
+current_fl_DOY_w_df <- as.data.frame(current_fl_DOY_w, xy = TRUE)
+
+#ggplot, DOY 94-272
+current_fl_DOY_c_gg <- ggplot() +
+  geom_raster(data = current_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(94,272), na.value = "transparent", name = "DOY", option = "C", direction = -1) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw()
+
+current_fl_DOY_c_gg
+
+current_fl_DOY_w_gg <- ggplot() +
+  geom_raster(data = current_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(94,272), na.value = "transparent", name = "DOY", option = "C", direction = -1) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw()
+
+current_fl_DOY_w_gg
+
+current_fl_DOY_gg <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = current_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = current_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(94,272), na.value = "transparent", name = "DOY", option = "C", direction = -1) +
+  coord_sf() +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_bw()
+
+current_fl_DOY_gg
+
+
+#mask to cool vs warm region rasters
+current_fl_DOY_c <- mask(current_fl_DOY_c, coolregion_raster)
+current_fl_DOY_w <- mask(current_fl_DOY_w, warmregion_raster)
+
+hist(current_fl_DOY_c)
+hist(current_fl_DOY_w)
+
+```
+
+
+####10b. Make prediction on future climate: BCC
+```{r}
+#BCC 245 2021
+BCC_245_2021_fl_DOY_c <- raster::predict(object = BCC_245_2021_fl,
+                                       model = cool_lm)
+plot(BCC_245_2021_fl_DOY_c)
+
+
+BCC_245_2021_fl_DOY_w <- raster::predict(object = BCC_245_2021_fl,
+                                       model = warm_lm)
+
+plot(BCC_245_2021_fl_DOY_w)
+
+#BCC 245 2081
+BCC_245_2081_fl_DOY_c <- raster::predict(object = BCC_245_2081_fl,
+                                       model = cool_lm)
+plot(BCC_245_2081_fl_DOY_c)
+
+BCC_245_2081_fl_DOY_w <- raster::predict(object = BCC_245_2081_fl,
+                                       model = warm_lm)
+
+plot(BCC_245_2081_fl_DOY_w)
+
+#BCC 585 2021
+BCC_585_2021_fl_DOY_c <- raster::predict(object = BCC_585_2021_fl,
+                                       model = cool_lm)
+plot(BCC_585_2021_fl_DOY_c)
+
+
+BCC_585_2021_fl_DOY_w <- raster::predict(object = BCC_585_2021_fl,
+                                       model = warm_lm)
+
+plot(BCC_585_2021_fl_DOY_w)
+
+#BCC 585 2081
+BCC_585_2081_fl_DOY_c <- raster::predict(object = BCC_585_2081_fl,
+                                       model = cool_lm)
+plot(BCC_585_2081_fl_DOY_c)
+
+
+BCC_585_2081_fl_DOY_w <- raster::predict(object = BCC_585_2081_fl,
+                                       model = warm_lm)
+
+plot(BCC_585_2081_fl_DOY_w)
+
+```
+###10c. Make future predictions CNRM
+```{r}
+#CNRM 245 2021
+CNRM_245_2021_fl_DOY_c <- raster::predict(object = CNRM_245_2021_fl,
+                                       model = cool_lm)
+plot(CNRM_245_2021_fl_DOY_c)
+
+CNRM_245_2021_fl_DOY_w <- raster::predict(object = CNRM_245_2021_fl,
+                                       model = warm_lm)
+plot(CNRM_245_2021_fl_DOY_w)
+
+#CNRM 245 2081-2100
+CNRM_245_2081_fl_DOY_c <- raster::predict(object = CNRM_245_2081_fl,
+                                       model = cool_lm)
+plot(CNRM_245_2081_fl_DOY_c)
+
+CNRM_245_2081_fl_DOY_w <- raster::predict(object = CNRM_245_2081_fl,
+                                       model = warm_lm)
+plot(CNRM_245_2081_fl_DOY_w)
+
+#CNRM 585 2021
+CNRM_585_2021_fl_DOY_c <- raster::predict(object = CNRM_585_2021_fl,
+                                       model = cool_lm)
+plot(CNRM_585_2021_fl_DOY_c)
+
+CNRM_585_2021_fl_DOY_w <- raster::predict(object = CNRM_585_2021_fl,
+                                       model = warm_lm)
+plot(CNRM_585_2021_fl_DOY_w)
+
+#CNRM 585 2081
+CNRM_585_2081_fl_DOY_c <- raster::predict(object = CNRM_585_2081_fl,
+                                       model = cool_lm)
+plot(CNRM_585_2081_fl_DOY_c)
+
+CNRM_585_2081_fl_DOY_w <- raster::predict(object = CNRM_585_2081_fl,
+                                       model = warm_lm)
+plot(CNRM_585_2081_fl_DOY_w)
+```
+
+
+#11. Calculate change in DOY for each future time period
+Future layer - current layer = change in DOY
+Negative values represent advancement
+
+#11a. Change in DOY - BCC
+```{r}
+#BCC 245 2021-2040
+change_BCC_245_2021_fl_DOY_c <- BCC_245_2021_fl_DOY_c - current_fl_DOY_c
+plot(change_BCC_245_2021_fl_DOY_c)
+
+change_BCC_245_2021_fl_DOY_w <- BCC_245_2021_fl_DOY_w - current_fl_DOY_w
+plot(change_BCC_245_2021_fl_DOY_w)
+
+#BCC 245 2081-2100
+change_BCC_245_2081_fl_DOY_c <- BCC_245_2081_fl_DOY_c - current_fl_DOY_c
+plot(change_BCC_245_2081_fl_DOY_c)
+
+change_BCC_245_2081_fl_DOY_w <- BCC_245_2081_fl_DOY_w - current_fl_DOY_w
+plot(change_BCC_245_2081_fl_DOY_w)
+
+#BCC 585 2021
+change_BCC_585_2021_fl_DOY_c <- BCC_585_2021_fl_DOY_c - current_fl_DOY_c
+plot(change_BCC_585_2021_fl_DOY_c)
+
+change_BCC_585_2021_fl_DOY_w <- BCC_585_2021_fl_DOY_w - current_fl_DOY_w
+plot(change_BCC_585_2021_fl_DOY_w)
+
+
+#BCC 585 2081
+change_BCC_585_2081_fl_DOY_c <- BCC_585_2081_fl_DOY_c - current_fl_DOY_c
+plot(change_BCC_585_2081_fl_DOY_c)
+
+change_BCC_585_2081_fl_DOY_w <- BCC_585_2081_fl_DOY_w - current_fl_DOY_w
+plot(change_BCC_585_2081_fl_DOY_w)
+```
+###11b. CNRM Change in DOY
+```{r}
+#CNRM 245 2021-2040
+change_CNRM_245_2021_fl_DOY_c <- CNRM_245_2021_fl_DOY_c - current_fl_DOY_c
+plot(change_CNRM_245_2021_fl_DOY_c)
+
+change_CNRM_245_2021_fl_DOY_w <- CNRM_245_2021_fl_DOY_w - current_fl_DOY_w
+plot(change_CNRM_245_2021_fl_DOY_w)
+
+#CNRM 245 2081-2100
+change_CNRM_245_2081_fl_DOY_c <- CNRM_245_2081_fl_DOY_c - current_fl_DOY_c
+plot(change_CNRM_245_2081_fl_DOY_c)
+
+change_CNRM_245_2081_fl_DOY_w <- CNRM_245_2081_fl_DOY_w - current_fl_DOY_w
+plot(change_CNRM_245_2081_fl_DOY_w)
+
+#CNRM 585 2021-2040
+change_CNRM_585_2021_fl_DOY_c <- CNRM_585_2021_fl_DOY_c - current_fl_DOY_c
+plot(change_CNRM_585_2021_fl_DOY_c)
+
+change_CNRM_585_2021_fl_DOY_w <- CNRM_585_2021_fl_DOY_w - current_fl_DOY_w
+plot(change_CNRM_585_2021_fl_DOY_w)
+
+#CNRM 585 2081-100
+change_CNRM_585_2081_fl_DOY_c <- CNRM_585_2081_fl_DOY_c - current_fl_DOY_c
+plot(change_CNRM_585_2081_fl_DOY_c)
+
+change_CNRM_585_2081_fl_DOY_w <- CNRM_585_2081_fl_DOY_w - current_fl_DOY_w
+plot(change_CNRM_585_2081_fl_DOY_w)
+```
+
+
+#12. Mask to cool and warm region raster
+###12a. First need to make a raster that represents warm region and one that represents cool region in current climate
+```{r}
+plot(cwregion_raster)
+
+#make it so it only has 2's which represent grids with cool regions
+coolregion_raster <- cwregion_raster
+coolregion_raster[coolregion_raster == 3] <- NA
+coolregion_raster <- mask(coolregion_raster, binary_px_mask)
+plot(coolregion_raster)
+
+#make it so it only has 3's which represent grids with warm regions
+warmregion_raster <- cwregion_raster
+warmregion_raster[warmregion_raster == 2] <- NA
+warmregion_raster <- mask(warmregion_raster, binary_px_mask)
+plot(warmregion_raster)
+
+```
+###12b. Make warm/cool region masks for BCC scenarios
+Binary future rasters are stored in binary_future_rasters stack
+```{r}
+names(binary_future_rasters)
+binary_BCC_245_2021 <- binary_future_rasters[[1]]
+binary_BCC_245_2081 <- binary_future_rasters[[2]]
+binary_BCC_585_2021 <- binary_future_rasters[[3]]
+binary_BCC_585_2081 <- binary_future_rasters[[4]]
+
+#make 0's (absense) to NAs so the mask will work properly
+binary_BCC_245_2021[binary_BCC_245_2021 == 0] <- NA
+binary_BCC_245_2081[binary_BCC_245_2081 == 0] <- NA
+binary_BCC_585_2021[binary_BCC_585_2021 == 0] <- NA
+binary_BCC_585_2081[binary_BCC_585_2081 == 0] <- NA
+
+#BCC 245 2021-2040
+cwregion_BCC2452021 <- mask(x = cwregion_tort, mask = binary_BCC_245_2021)
+plot(cwregion_BCC2452021)
+
+#BCC 245 2081-2040
+cwregion_BCC2452081 <- mask(x = cwregion_tort, mask = binary_BCC_245_2081)
+plot(cwregion_BCC2452081)
+
+#BCC 585 2021-2040
+cwregion_BCC5852021 <- mask(x = cwregion_tort, mask = binary_BCC_585_2021)
+plot(cwregion_BCC5852021)
+
+#BCC 585 2081-2100
+cwregion_BCC5852081 <- mask(x = cwregion_tort, mask = binary_BCC_585_2081)
+plot(cwregion_BCC5852081)
+```
+
+###12c. Make warm/cool region masks for CNRM Scenarios
+```{r}
+names(binary_future_rasters)
+
+binary_CNRM_245_2021 <- binary_future_rasters[[5]]
+binary_CNRM_245_2081 <- binary_future_rasters[[6]]
+binary_CNRM_585_2021 <- binary_future_rasters[[7]]
+binary_CNRM_585_2081 <- binary_future_rasters[[8]]
+
+#change 0's to NAs so the mask will work properly
+binary_CNRM_245_2021[binary_CNRM_245_2021 == 0] <- NA
+binary_CNRM_245_2081[binary_CNRM_245_2081 == 0] <- NA
+binary_CNRM_585_2021[binary_CNRM_585_2021 == 0] <- NA
+binary_CNRM_585_2081[binary_CNRM_585_2081 == 0] <- NA
+
+#create warm/cool region rasters for range extent under each CC scenario
+#CNRM 245 2021 
+cwregion_CNRM2452021 <- mask(cwregion_tort, mask = binary_CNRM_245_2021)
+plot(cwregion_CNRM2452021)
+
+#CNRM 245 2081
+cwregion_CNRM2452081 <- mask(cwregion_tort, mask = binary_CNRM_245_2081)
+plot(cwregion_CNRM2452081)
+
+#CNRM 585 2021
+cwregion_CNRM5852021 <- mask(cwregion_tort, mask = binary_CNRM_585_2021)
+plot(cwregion_CNRM5852021)
+
+#CNRM 585 2081
+cwregion_CNRM5852081 <- mask(cwregion_tort, mask = binary_CNRM_585_2081)
+plot(cwregion_CNRM5852081)
+```
+###12d.Create seperate warm and cool region raster masks for each scenario - BCC
+2 = cool regions
+3 = warm regions
+Need to replace 2 with NA for only warm region raster and 3 with NA for only cool region rasters
+```{r}
+#BCC 245 2021-2040
+cwregion_BCC2452021_c <- cwregion_BCC2452021
+cwregion_BCC2452021_w <- cwregion_BCC2452021
+
+cwregion_BCC2452021_c[cwregion_BCC2452021_c == 3] <- NA
+cwregion_BCC2452021_w[cwregion_BCC2452021_w == 2] <- NA
+
+plot(cwregion_BCC2452021_c)
+plot(cwregion_BCC2452021_w)
+
+#BCC 245 2081-2100
+cwregion_BCC2452081_c <- cwregion_BCC2452081
+cwregion_BCC2452081_w <- cwregion_BCC2452081
+
+cwregion_BCC2452081_c[cwregion_BCC2452081_c == 3] <- NA
+cwregion_BCC2452081_w[cwregion_BCC2452081_w == 2] <- NA
+
+plot(cwregion_BCC2452081_c)
+plot(cwregion_BCC2452081_w)
+
+#BCC 585 2021-2040
+cwregion_BCC5852021_c <- cwregion_BCC5852021
+cwregion_BCC5852021_w <- cwregion_BCC5852021
+
+cwregion_BCC5852021_c[cwregion_BCC5852021_c == 3] <- NA
+cwregion_BCC5852021_w[cwregion_BCC5852021_w == 2] <- NA
+
+plot(cwregion_BCC5852021_c)
+plot(cwregion_BCC5852021_w)
+
+#BCC 585 2081-2100
+cwregion_BCC5852081_c <- cwregion_BCC5852081
+cwregion_BCC5852081_w <- cwregion_BCC5852081
+
+cwregion_BCC5852081_c[cwregion_BCC5852081_c == 3] <- NA
+cwregion_BCC5852081_w[cwregion_BCC5852081_w == 2] <- NA
+
+plot(cwregion_BCC5852081_c)
+plot(cwregion_BCC5852081_w)
+```
+
+###12e.Create seperate warm and cool region rasters for each CNRM scenario
+```{r}
+#CNRM 245 2021-2040
+cwregion_CNRM2452021_c <- cwregion_CNRM2452021
+cwregion_CNRM2452021_w <- cwregion_CNRM2452021
+
+cwregion_CNRM2452021_c[cwregion_CNRM2452021_c == 3] <- NA
+cwregion_CNRM2452021_w[cwregion_CNRM2452021_w == 2] <- NA
+
+plot(cwregion_CNRM2452021_c)
+plot(cwregion_CNRM2452021_w)
+
+#CNRM 245 2081-2100
+cwregion_CNRM2452081_c <- cwregion_CNRM2452081
+cwregion_CNRM2452081_w <- cwregion_CNRM2452081
+
+cwregion_CNRM2452081_c[cwregion_CNRM2452081_c == 3] <- NA
+cwregion_CNRM2452081_w[cwregion_CNRM2452081_w == 2] <- NA
+
+plot(cwregion_CNRM2452081_c)
+plot(cwregion_CNRM2452081_w)
+
+#CNRM 585 2021-2040
+cwregion_CNRM5852021_c <- cwregion_CNRM5852021
+cwregion_CNRM5852021_w <- cwregion_CNRM5852021
+
+cwregion_CNRM5852021_c[cwregion_CNRM5852021_c == 3] <- NA
+cwregion_CNRM5852021_w[cwregion_CNRM5852021_w == 2] <- NA
+
+plot(cwregion_CNRM5852021_c)
+plot(cwregion_CNRM5852021_w)
+
+#CNRM 585 2081-2100
+cwregion_CNRM5852081_c <- cwregion_CNRM5852081
+cwregion_CNRM5852081_w <- cwregion_CNRM5852081
+
+cwregion_CNRM5852081_c[cwregion_CNRM5852081_c == 3] <- NA
+cwregion_CNRM5852081_w[cwregion_CNRM5852081_w == 2] <- NA
+
+plot(cwregion_CNRM5852081_c)
+plot(cwregion_CNRM5852081_w)
+```
+
+
+###12f. Mask predicted DOY to warm or cool region - BCC
+```{r}
+#BCC 245 2021-2040
+change_BCC_245_2021_fl_DOY_c <- mask(change_BCC_245_2021_fl_DOY_c, cwregion_BCC2452021_c)
+plot(change_BCC_245_2021_fl_DOY_c)
+hist(change_BCC_245_2021_fl_DOY_c)
+
+change_BCC_245_2021_fl_DOY_w <- mask(change_BCC_245_2021_fl_DOY_w, cwregion_BCC2452021_w)
+plot(change_BCC_245_2021_fl_DOY_w)
+hist(change_BCC_245_2021_fl_DOY_w)
+
+#BCC 245 2081-2100
+change_BCC_245_2081_fl_DOY_c <- mask(change_BCC_245_2081_fl_DOY_c, cwregion_BCC2452081_c)
+plot(change_BCC_245_2081_fl_DOY_c)
+hist(change_BCC_245_2081_fl_DOY_c)
+
+change_BCC_245_2081_fl_DOY_w <- mask(change_BCC_245_2081_fl_DOY_w, cwregion_BCC2452081_w)
+plot(change_BCC_245_2081_fl_DOY_w)
+hist(change_BCC_245_2081_fl_DOY_w)
+
+#BCC 585 2021-2040
+change_BCC_585_2021_fl_DOY_c <- mask(change_BCC_585_2021_fl_DOY_c, cwregion_BCC5852021_c)
+plot(change_BCC_585_2021_fl_DOY_c)
+hist(change_BCC_585_2021_fl_DOY_c)
+
+change_BCC_585_2021_fl_DOY_w <- mask(change_BCC_585_2021_fl_DOY_w, cwregion_BCC5852021_w)
+plot(change_BCC_585_2021_fl_DOY_w)
+hist(change_BCC_585_2021_fl_DOY_w)
+
+#BCC 585 2081-2100
+change_BCC_585_2081_fl_DOY_c <- mask(change_BCC_585_2081_fl_DOY_c, cwregion_BCC5852081_c)
+plot(change_BCC_585_2081_fl_DOY_c)
+hist(change_BCC_585_2081_fl_DOY_c)
+
+change_BCC_585_2081_fl_DOY_w <- mask(change_BCC_585_2081_fl_DOY_w, cwregion_BCC5852081_w)
+plot(change_BCC_585_2081_fl_DOY_w)
+hist(change_BCC_585_2081_fl_DOY_w)
+```
+
+###12g.  Mask predicted DOY to warm or cool region - CNRM
+```{r}
+#CNRM 245 2021-2040
+change_CNRM_245_2021_fl_DOY_c <- mask(change_CNRM_245_2021_fl_DOY_c, cwregion_CNRM2452021_c)
+plot(change_CNRM_245_2021_fl_DOY_c)
+hist(change_CNRM_245_2021_fl_DOY_c)
+
+change_CNRM_245_2021_fl_DOY_w <- mask(change_CNRM_245_2021_fl_DOY_w, cwregion_CNRM2452021_w)
+plot(change_CNRM_245_2021_fl_DOY_w)
+hist(change_CNRM_245_2021_fl_DOY_w)
+
+#CNRM 245 2081-2100
+change_CNRM_245_2081_fl_DOY_c <- mask(change_CNRM_245_2081_fl_DOY_c, cwregion_CNRM2452081_c)
+plot(change_CNRM_245_2081_fl_DOY_c)
+hist(change_CNRM_245_2081_fl_DOY_c)
+
+change_CNRM_245_2081_fl_DOY_w <- mask(change_CNRM_245_2081_fl_DOY_w, cwregion_CNRM2452081_w)
+plot(change_CNRM_245_2081_fl_DOY_w)
+hist(change_CNRM_245_2081_fl_DOY_w)
+
+#CNRM 585 2021-2040
+change_CNRM_585_2021_fl_DOY_c <- mask(change_CNRM_585_2021_fl_DOY_c, cwregion_CNRM5852021_c)
+plot(change_CNRM_585_2021_fl_DOY_c)
+hist(change_CNRM_585_2021_fl_DOY_c)
+
+change_CNRM_585_2021_fl_DOY_w <- mask(change_CNRM_585_2021_fl_DOY_w, cwregion_CNRM5852021_w)
+plot(change_CNRM_585_2021_fl_DOY_w)
+hist(change_CNRM_585_2021_fl_DOY_w)
+
+#CNRM 585 2021-2040
+change_CNRM_585_2081_fl_DOY_c <- mask(change_CNRM_585_2081_fl_DOY_c, cwregion_CNRM5852081_c)
+plot(change_CNRM_585_2081_fl_DOY_c)
+hist(change_CNRM_585_2081_fl_DOY_c)
+
+change_CNRM_585_2081_fl_DOY_w <- mask(change_CNRM_585_2081_fl_DOY_w, cwregion_CNRM5852081_w)
+plot(change_CNRM_585_2081_fl_DOY_w)
+hist(change_CNRM_585_2081_fl_DOY_w)
+```
+
+
+#13. Plot change in DOY with ggplot
+#13a. Create dataframes to plot with ggplot - BCC
+```{r}
+#BCC 245 2021-2040
+change_BCC_245_2021_fl_DOY_c_df <- as.data.frame(change_BCC_245_2021_fl_DOY_c, xy = TRUE)
+change_BCC_245_2021_fl_DOY_w_df <- as.data.frame(change_BCC_245_2021_fl_DOY_w, xy = TRUE)
+
+#BCC 245 2081-2100
+change_BCC_245_2081_fl_DOY_c_df <- as.data.frame(change_BCC_245_2081_fl_DOY_c, xy = TRUE)
+change_BCC_245_2081_fl_DOY_w_df <- as.data.frame(change_BCC_245_2081_fl_DOY_w, xy = TRUE)
+
+#BCC 585 2021-2040
+change_BCC_585_2021_fl_DOY_c_df <- as.data.frame(change_BCC_585_2021_fl_DOY_c, xy = TRUE)
+change_BCC_585_2021_fl_DOY_w_df <- as.data.frame(change_BCC_585_2021_fl_DOY_w, xy = TRUE)
+
+#BCC 585 2081-2100
+change_BCC_585_2081_fl_DOY_c_df <- as.data.frame(change_BCC_585_2081_fl_DOY_c, xy = TRUE)
+change_BCC_585_2081_fl_DOY_w_df <- as.data.frame(change_BCC_585_2081_fl_DOY_w, xy = TRUE)
+```
+
+###13b. Create dataframes to plot with ggplot - CNRM
+```{r}
+#CNRM 245 2021-2040
+change_CNRM_245_2021_fl_DOY_c_df <- as.data.frame(change_CNRM_245_2021_fl_DOY_c, xy = TRUE)
+change_CNRM_245_2021_fl_DOY_w_df <- as.data.frame(change_CNRM_245_2021_fl_DOY_w, xy = TRUE)
+
+#CNRM 245 2081-2100
+change_CNRM_245_2081_fl_DOY_c_df <- as.data.frame(change_CNRM_245_2081_fl_DOY_c, xy = TRUE)
+change_CNRM_245_2081_fl_DOY_w_df <- as.data.frame(change_CNRM_245_2081_fl_DOY_w, xy = TRUE)
+
+#CNRM 585 2021-2040
+change_CNRM_585_2021_fl_DOY_c_df <- as.data.frame(change_CNRM_585_2021_fl_DOY_c, xy = TRUE)
+change_CNRM_585_2021_fl_DOY_w_df <- as.data.frame(change_CNRM_585_2021_fl_DOY_w, xy = TRUE)
+
+#CNRM 585 2021-2040
+change_CNRM_585_2081_fl_DOY_c_df <- as.data.frame(change_CNRM_585_2081_fl_DOY_c, xy = TRUE)
+change_CNRM_585_2081_fl_DOY_w_df <- as.data.frame(change_CNRM_585_2081_fl_DOY_w, xy = TRUE)
+```
+
+
+###13c. Read in CFP and make plottable polygon
+```{r}
+cfp_multipoly <- st_read("CFP_GIS/CFP_GIS.shp")
+crs(cfp_multipoly)
+
+st_is_longlat(cfp_multipoly)
+
+cfp_multipoly_trans <- st_transform(cfp_multipoly, crs(cfp_background))
+cfp_multipoly_trans
+```
+
+
+###13d.Plot with ggplot - BCC
+-6 to -47
+```{r}
+##BCC 245 2021-2040
+DOY_BCC_245_2021_fl <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = change_BCC_245_2021_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = change_BCC_245_2021_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(-47,-6), na.value = "transparent", name = "Change in DOY", option = "C", direction = -1) +
+  coord_sf() +
+  theme_bw()
+
+DOY_BCC_245_2021_fl
+
+##BCC 245 2081-2100
+DOY_BCC_245_2081_fl <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = change_BCC_245_2081_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = change_BCC_245_2081_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(-47,-6), na.value = "transparent", name = "Change in DOY", option = "C", direction = -1) +
+  coord_sf() +
+  theme_bw()
+
+DOY_BCC_245_2081_fl
+
+##BCC 585 2021-2040
+DOY_BCC_585_2021_fl <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = change_BCC_585_2021_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = change_BCC_585_2021_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(-47,-6), na.value = "transparent", name = "Change in DOY", option = "C", direction = -1) +
+  coord_sf() +
+  theme_bw()
+
+DOY_BCC_585_2021_fl
+
+##BCC 585 2081-2100
+DOY_BCC_585_2081_fl <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = change_BCC_585_2081_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = change_BCC_585_2081_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(-47,-6), na.value = "transparent", name = "Change in DOY", option = "C", direction = -1) +
+  coord_sf() +
+  theme_bw()
+
+DOY_BCC_585_2081_fl
+```
+
+###133. Plot with ggplot - CNRM
+```{r}
+##CNRM 245 2021-2040
+DOY_CNRM_245_2021_fl <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = change_CNRM_245_2021_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = change_CNRM_245_2021_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(-47,-6), na.value = "transparent", name = "Change in DOY", option = "C", direction = -1) +
+  coord_sf() +
+  theme_bw()
+
+DOY_CNRM_245_2021_fl
+
+##CNRM 245 2081-2100
+DOY_CNRM_245_2081_fl <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = change_CNRM_245_2081_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = change_CNRM_245_2081_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(-47,-6), na.value = "transparent", name = "Change in DOY", option = "C", direction = -1) +
+  coord_sf() +
+  theme_bw()
+
+DOY_CNRM_245_2081_fl
+
+##CNRM 585 2021-2040
+DOY_CNRM_585_2021_fl <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = change_CNRM_585_2021_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = change_CNRM_585_2021_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(-47,-6), na.value = "transparent", name = "Change in DOY", option = "C", direction = -1) +
+  coord_sf() +
+  theme_bw()
+
+DOY_CNRM_585_2021_fl
+
+##CNRM 585 2081-2100
+DOY_CNRM_585_2081_fl <- ggplot() +
+  geom_sf(data = cfp_multipoly_trans, lwd = 0) +
+  geom_raster(data = change_CNRM_585_2081_fl_DOY_c_df, aes(x = x, y = y, fill = layer)) +
+  geom_raster(data = change_CNRM_585_2081_fl_DOY_w_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(limits = c(-47,-6), na.value = "transparent", name = "Change in DOY", option = "C", direction = -1) +
+  coord_sf() +
+  theme_bw()
+
+DOY_CNRM_585_2081_fl
+```
+
+#Histograms
+```{r}
+hist(change_BCC_245_2021_fl_DOY_c)
+hist(change_BCC_245_2021_fl_DOY_w)
+
+hist(change_BCC_245_2081_fl_DOY_c)
+hist(change_BCC_245_2081_fl_DOY_w)
+
+hist(change_BCC_585_2021_fl_DOY_c)
+hist(change_BCC_585_2021_fl_DOY_w)
+
+hist(change_BCC_585_2081_fl_DOY_c)
+hist(change_BCC_585_2081_fl_DOY_w)
+
+```
+
